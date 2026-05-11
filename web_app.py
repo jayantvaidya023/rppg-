@@ -37,7 +37,7 @@ from realtime_camera import RealtimeProcessor
 app = Flask(__name__)
 
 # Global processor instance
-processor = RealtimeProcessor(buffer_seconds=10, update_interval=1.0)
+processor = RealtimeProcessor(buffer_seconds=10, update_interval=0.1)
 
 # Session storage (in-memory)
 last_session_data = {}
@@ -307,7 +307,7 @@ def stream():
                 data['artifact_percent'] = state['hrv']['artifact_percent']
 
             yield f"data: {json.dumps(data)}\n\n"
-            time.sleep(1.0)
+            time.sleep(0.1)
 
     return Response(
         generate(),

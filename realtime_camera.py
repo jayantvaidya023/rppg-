@@ -208,7 +208,7 @@ class RealtimeProcessor:
 
             with self._lock:
                 if self.status in ["Initializing camera...", "Idle", "Analysis complete"]:
-                    self.status = "Detecting face..."
+                    self.status = "Detecting face"
 
             # Extract ROIs using MediaPipe (or fallback)
             rois, face_rect = extract_multi_roi(
@@ -282,10 +282,10 @@ class RealtimeProcessor:
         
         with self._lock:
             if len(self.roi_buffers['forehead']['r']) < 30:
-                self.status = f"Collecting enough samples... ({len(self.roi_buffers['forehead']['r'])}/30)"
+                self.status = f"Detecting face... ({len(self.roi_buffers['forehead']['r'])}/30)"
                 return
 
-            self.status = "Analyzing signal..."
+            self.status = "Processing pulse"
             
             # Extract ROIs
             signals = {}
@@ -342,3 +342,5 @@ class RealtimeProcessor:
             self.current_hrv = hrv_result
             self.current_waveform = fused_signal.tolist()
             self.current_peaks = peaks
+            # Alternate status for visual realtime feedback
+            self.status = "Computing HRV" if int(time.time() * 2) % 2 == 0 else "Processing pulse"
