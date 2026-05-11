@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="rPPG Heart Rate Monitor — Real-time photoplethysmography with HRV analysis">
+    <title>rPPG Heart Rate Monitor</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <div class="logo-pulse"></div>
+                <h1>rPPG Monitor</h1>
+            </div>
+            <div class="header-right">
+                <span class="status-badge" id="statusBadge">Idle</span>
+            </div>
+        </header>
+
+        <!-- Main Grid -->
+        <main class="grid">
+
+            <!-- BPM Card -->
+            <section class="card bpm-card" id="bpmCard">
+                <div class="card-label">Heart Rate</div>
+                <div class="bpm-display">
+                    <span class="bpm-value" id="bpmValue">--</span>
+                    <span class="bpm-unit">BPM</span>
+                </div>
+                <div class="bpm-range" id="bpmRange">Min -- | Max --</div>
+                <div class="bpm-method" id="bpmMethod">FFT Primary</div>
+                <div class="bpm-range" style="margin-top: 10px;">
+                    <span id="sqiValue" style="color: #4cd137; font-weight: bold;">SQI: --%</span> | 
+                    <span id="artifactValue" style="color: #fbc531;">Artifacts: --%</span>
+                </div>
+            </section>
+
+            <!-- HRV Card -->
+            <section class="card hrv-card">
+                <div class="card-label">HRV Metrics</div>
+                <div class="hrv-grid">
+                    <div class="hrv-item">
+                        <span class="hrv-value" id="sdnnValue">--</span>
+                        <span class="hrv-label">SDNN (ms)</span>
+                    </div>
+                    <div class="hrv-item">
+                        <span class="hrv-value" id="rmssdValue">--</span>
+                        <span class="hrv-label">RMSSD (ms)</span>
+                    </div>
+                    <div class="hrv-item">
+                        <span class="hrv-value" id="pnn50Value">--</span>
+                        <span class="hrv-label">pNN50 (%)</span>
+                    </div>
+                    <div class="hrv-item">
+                        <span class="hrv-value" id="meanRRValue">--</span>
+                        <span class="hrv-label">Mean RR (ms)</span>
+                    </div>
+                    <div class="hrv-item">
+                        <span class="hrv-value" id="peakBpmValue">--</span>
+                        <span class="hrv-label">Peak BPM</span>
+                    </div>
+                    <div class="hrv-item">
+                        <span class="hrv-value" id="nnCountValue">--</span>
+                        <span class="hrv-label">NN Count</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Live Camera Preview Card -->
+            <section class="card camera-preview-card" id="cameraPreviewCard" style="display:none;">
+                <div class="card-label">Live Camera Preview</div>
+                <div class="video-container" style="position: relative; text-align: center; background-color: #000; border-radius: 8px; overflow: hidden; min-height: 300px; display: flex; align-items: center; justify-content: center;">
+                    <!-- Local video element for client-side capture -->
+                    <video id="localVideo" autoplay muted playsinline style="max-width: 100%; max-height: 480px; object-fit: contain; transform: scaleX(-1);"></video>
+                    <!-- Legacy stream image for file analysis -->
+                    <img id="videoStream" src="" style="display: none; max-width: 100%; max-height: 480px; object-fit: contain;">
+                    
+                    <!-- Face positioning guide -->
+                    <div id="faceOverlay" style="position: absolute; top: 10%; bottom: 10%; left: 25%; right: 25%; border: 3px dashed rgba(255,255,255,0.4); border-radius: 50%; pointer-events: none;"></div>
+                    
+                    <!-- Quality Indicators -->
+                    <div style="position: absolute; top: 10px; left: 10px; right: 10px; display: flex; justify-content: space-between; pointer-events: none;">
+                        <span id="fpsBadge" class="status-badge" style="background: rgba(0,0,0,0.5); font-size: 0.65rem;">FPS: --</span>
+                        <span id="lightBadge" class="status-badge" style="background: rgba(0,0,0,0.5); font-size: 0.65rem;">Light: --</span>
+                    </div>
+                    
+                    <!-- Recording Timer Overlay -->
+                    <div id="recordingTimer" style="display: none; position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: rgba(248,113,113,0.8); color: white; padding: 4px 12px; border-radius: 20px; font-weight: bold; font-size: 0.9rem; animation: pulse-glow-badge 1s infinite;">
+                        00:00
+                    </div>
+                </div>
+                <p id="qualityWarning" style="color: var(--accent-amber); font-size: 0.8rem; margin-top: 10px; text-align: center; display: none;">Ensure your face is well-lit and inside the oval.</p>
+                <!-- Upload Progress bar -->
+                <div id="uploadProgressContainer" style="display: none; margin-top: 15px;">
+                    <div class="card-label">Uploading & Processing...</div>
+                    <div style="width: 100%; height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden;">
+                        <div id="uploadProgressBar" style="width: 0%; height: 100%; background: var(--accent-blue); transition: width 0.3s;"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Waveform Card -->
+            <section class="card waveform-card">
+                <div class="card-label">POS Waveform</div>
+                <canvas id="waveformCanvas" width="800" height="200"></canvas>
+            </section>
+
+            <!-- HR Over Time Card -->
+            <section class="card hr-time-card">
+                <div class="card-label">Heart Rate Over Time</div>
+                <canvas id="hrTimeCanvas" width="800" height="200"></canvas>
+            </section>
+
+            <!-- Subject Info Card -->
+            <section class="card subject-card">
+                <div class="card-label">Subject Information</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+                    <div class="control-group" style="margin-bottom: 0;">
+                        <label class="control-label">Name</label>
+                        <input type="text" id="subjectName" class="text-input" placeholder="e.g. Jayant">
+                    </div>
+                    <div class="control-group" style="margin-bottom: 0;">
+                        <label class="control-label">Age</label>
+                        <input type="number" id="subjectAge" class="text-input" placeholder="e.g. 30" min="1" max="120">
+                    </div>
+                    <div class="control-group" style="margin-bottom: 0;">
+                        <label class="control-label">Gender</label>
+                        <select id="subjectGender" class="select-input">
+                            <option value="">Select...</option>
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Controls Card -->
+            <section class="card controls-card">
+                <div class="card-label">Controls</div>
+
+                <!-- Source Selection -->
+                <div class="control-group">
+                    <label class="control-label">Input Source</label>
+                    <div class="source-selector">
+                        <select id="sourceSelect" class="select-input">
+                            <option value="front">Front Camera (Selfie)</option>
+                            <option value="back">Back Camera</option>
+                            <option value="file">Video File</option>
+                            <option value="default">Default Video (rPPG_video.mp4)</option>
+                        </select>
+                        <input type="text" id="ipInput" class="text-input" 
+                               placeholder="http://192.168.1.5:8080/video" 
+                               style="display:none;">
+                    </div>
+                </div>
+
+                <!-- Camera Buttons -->
+                <div class="control-group" id="cameraControls">
+                    <div class="btn-row">
+                        <button class="btn btn-start" id="btnStartCamera" onclick="startCamera()">
+                            ▶ Start Camera
+                        </button>
+                        <button class="btn btn-stop" id="btnStopCamera" onclick="stopCamera()" disabled>
+                            ⏹ Stop Camera
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Recording Buttons -->
+                <div class="control-group" id="recordControls">
+                    <div class="btn-row">
+                        <button class="btn btn-record" id="btnStartRecord" onclick="startRecording()" disabled>
+                            ⏺ Start Recording
+                        </button>
+                        <button class="btn btn-stop" id="btnStopRecord" onclick="stopRecording()" disabled>
+                            ⏹ Stop Recording
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Video Analysis -->
+                <div class="control-group" id="videoControls" style="display:none;">
+                    <div class="btn-row">
+                        <input type="file" id="videoFile" accept="video/*" class="file-input">
+                        <button class="btn btn-analyze" id="btnAnalyze" onclick="analyzeVideo()">
+                            📊 Analyze
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Default Video -->
+                <div class="control-group" id="defaultControls" style="display:none;">
+                    <button class="btn btn-analyze" onclick="analyzeDefault()">
+                        📊 Analyze rPPG_video.mp4
+                    </button>
+                </div>
+            </section>
+
+            <!-- Export Card -->
+            <section class="card export-card">
+                <div class="card-label">Export Reports</div>
+                <p class="export-desc">Export RGB signals, RR intervals, and HRV metrics for comparison with emWave.</p>
+                <div class="btn-row">
+                    <button class="btn btn-export" onclick="exportReport('csv')">📄 CSV</button>
+                    <button class="btn btn-export" onclick="exportReport('json')">📋 JSON</button>
+                    <button class="btn btn-export" onclick="exportReport('xlsx')">📊 Excel</button>
+                </div>
+            </section>
+
+        </main>
+
+        <!-- Status Bar -->
+        <footer class="status-bar">
+            <span id="statusMessage">Ready. Select a source and start.</span>
+        </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

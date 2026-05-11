@@ -1,0 +1,422 @@
+"""
+web_app.py — Lightweight Flask web interface for rPPG.
+
+Features:
+    - Live BPM display via Server-Sent Events (SSE)
+    - Waveform preview
+    - Start/stop recording sessions
+    - Video file upload and analysis
+    - Export reports (CSV/JSON/Excel)
+    - Webcam / IP webcam source selection
+
+Reuses the SAME POS + FFT pipeline from rppg_core.py.
+"""
+
+import os
+import io
+import time
+import json
+import threading
+import datetime
+import zipfile
+import tempfile
+
+from flask import (
+    Flask, render_template, request, jsonify,
+    Response, send_file,
+)
+import numpy as np
+
+from rppg_core import process_video, bandpass_filter, compute_windowed_signal, estimate_bpm_fft
+from preprocessing import preprocess_signal
+from hrv_analysis import analyze_hrv
+from export_reports import export_full_session
+from realtime_camera import RealtimeProcessor
+
+
+app = Flask(__name__)
+
+# Global processor instance
+processor = RealtimeProcessor(buffer_seconds=10, update_interval=1.0)
+
+# Session storage (in-memory)
+last_session_data = {}
+last_video_results = {}
+
+EXPORT_DIR = os.path.join(os.path.dirname(__file__), 'exports')
+
+
+# ---------------------------------------------------------------------------
+# Pages
+# ---------------------------------------------------------------------------
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+
+# ---------------------------------------------------------------------------
+# Camera control API
+# ---------------------------------------------------------------------------
+
+@app.route('/api/start-camera', methods=['POST'])
+def start_camera():
+    """Start real-time camera processing."""
+    data = request.get_json(silent=True) or {}
+    source = data.get('source', 0)
+
+    # Parse source: integer for webcam, string for IP cam
+    try:
+        source = int(source)
+    except (ValueError, TypeError):
+        pass  # keep as string (URL)
+
+    try:
+        processor.start(source)
+        return jsonify({'status': 'ok', 'message': f'Camera started: {source}'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/api/stop-camera', methods=['POST'])
+def stop_camera():
+    """Stop camera processing."""
+    processor.stop()
+    return jsonify({'status': 'ok', 'message': 'Camera stopped'})
+
+
+# ---------------------------------------------------------------------------
+# Recording API
+# ---------------------------------------------------------------------------
+
+@app.route('/api/start-recording', methods=['POST'])
+def start_recording():
+    """Start recording session data."""
+    processor.start_recording()
+    return jsonify({'status': 'ok', 'message': 'Recording started'})
+
+
+@app.route('/api/stop-recording', methods=['POST'])
+def stop_recording():
+    """Stop recording and process the session."""
+    global last_session_data
+    
+    req_data = request.get_json(silent=True) or {}
+    subject_info = req_data.get('subject_info', {})
+
+    session = processor.stop_recording()
+
+    if len(session['r']) < 30:
+        return jsonify({
+            'status': 'error',
+            'message': f"Only {len(session['r'])} frames recorded. Need at least 30."
+        }), 400
+
+    # Process recorded data with the SAME pipeline as heartrate.py
+    r, g, b = session['r'], session['g'], session['b']
+    fps = session['fps']
+
+    pos = compute_windowed_signal(r, g, b, fps)
+    filtered = bandpass_filter(pos, fps)
+
+    from rppg_core import estimate_bpm_fft, sliding_window_hr
+    bpm = estimate_bpm_fft(filtered, fps)
+    time_points, hr_values = sliding_window_hr(filtered, fps)
+
+    # HRV analysis (additive)
+    hrv_data = analyze_hrv(filtered, fps)
+
+    last_session_data = {
+        'r': r, 'g': g, 'b': b,
+        'fps': fps,
+        'pos_signal': pos,
+        'filtered_signal': filtered,
+        'bpm': bpm,
+        'time_points': time_points,
+        'hr_values': hr_values,
+        'rr_ms': hrv_data['rr_ms'],
+        'rr_clean': hrv_data['rr_clean'],
+        'rr_mask': hrv_data['rr_mask'],
+        'hrv': hrv_data['hrv'],
+        'peak_bpm': hrv_data['peak_bpm'],
+        'peaks': hrv_data['peaks'],
+        'duration': session['duration'],
+        'source': 'camera_recording',
+        'subject_info': subject_info,
+    }
+
+    return jsonify({
+        'status': 'ok',
+        'bpm': round(bpm, 1),
+        'peak_bpm': round(hrv_data['peak_bpm'], 1),
+        'hrv': hrv_data['hrv'],
+        'duration': round(session['duration'], 1),
+        'frames': len(r),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Video file analysis API
+# ---------------------------------------------------------------------------
+
+@app.route('/api/analyze-video', methods=['POST'])
+def analyze_video():
+    """Upload and analyze a video file."""
+    global last_session_data
+
+    subject_info = {}
+    try:
+        subject_info = json.loads(request.form.get('subject_info', '{}'))
+    except Exception:
+        pass
+
+    if 'video' not in request.files:
+        # Try using default video
+        video_path = os.path.join(os.path.dirname(__file__), 'rPPG_video.mp4')
+        if not os.path.exists(video_path):
+            return jsonify({
+                'status': 'error',
+                'message': 'No video file provided and no default video found.'
+            }), 400
+    else:
+        video_file = request.files['video']
+        filename = video_file.filename
+        ext = os.path.splitext(filename)[1] if filename else '.mp4'
+        if not ext: ext = '.mp4'
+        
+        video_path = os.path.join(
+            tempfile.gettempdir(),
+            f'rppg_upload_{int(time.time())}{ext}'
+        )
+        video_file.save(video_path)
+
+    try:
+        processor.start(video_path)
+        processor.start_recording() # record the session for exporting
+        
+        # Start background thread to finalize when done
+        def finalize():
+            global last_session_data
+            while processor.is_running:
+                time.sleep(0.5)
+            session = processor.stop_recording()
+            if len(session['r']) > 30:
+                r, g, b = session['r'], session['g'], session['b']
+                fps = session['fps']
+                pos = compute_windowed_signal(r, g, b, fps)
+                filtered = bandpass_filter(pos, fps)
+                from rppg_core import estimate_bpm_fft, sliding_window_hr
+                bpm = estimate_bpm_fft(filtered, fps)
+                time_points, hr_values = sliding_window_hr(filtered, fps)
+                hrv_data = analyze_hrv(filtered, fps)
+                last_session_data = {
+                    'r': r, 'g': g, 'b': b, 'fps': fps,
+                    'pos_signal': pos, 'filtered_signal': filtered,
+                    'bpm': bpm, 'time_points': time_points, 'hr_values': hr_values,
+                    'rr_ms': hrv_data['rr_ms'], 'rr_clean': hrv_data['rr_clean'],
+                    'rr_mask': hrv_data['rr_mask'], 'hrv': hrv_data['hrv'],
+                    'peak_bpm': hrv_data['peak_bpm'], 'peaks': hrv_data['peaks'],
+                    'duration': session['duration'], 'source': 'video_file',
+                    'subject_info': subject_info,
+                }
+        threading.Thread(target=finalize, daemon=True).start()
+        
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+
+    return jsonify({'status': 'ok', 'message': 'Live analysis started'})
+
+
+
+
+@app.route('/api/analyze-default', methods=['POST'])
+def analyze_default_video():
+    """Analyze the default rPPG_video.mp4."""
+    global last_session_data
+
+    req_data = request.get_json(silent=True) or {}
+    subject_info = req_data.get('subject_info', {})
+
+    video_path = os.path.join(os.path.dirname(__file__), 'rPPG_video.mp4')
+    if not os.path.exists(video_path):
+        return jsonify({
+            'status': 'error',
+            'message': 'rPPG_video.mp4 not found.'
+        }), 404
+
+    try:
+        processor.start(video_path)
+        processor.start_recording()
+        
+        def finalize():
+            global last_session_data
+            while processor.is_running:
+                time.sleep(0.5)
+            session = processor.stop_recording()
+            if len(session['r']) > 30:
+                r, g, b = session['r'], session['g'], session['b']
+                fps = session['fps']
+                pos = compute_windowed_signal(r, g, b, fps)
+                filtered = bandpass_filter(pos, fps)
+                from rppg_core import estimate_bpm_fft, sliding_window_hr
+                bpm = estimate_bpm_fft(filtered, fps)
+                time_points, hr_values = sliding_window_hr(filtered, fps)
+                hrv_data = analyze_hrv(filtered, fps)
+                last_session_data = {
+                    'r': r, 'g': g, 'b': b, 'fps': fps,
+                    'pos_signal': pos, 'filtered_signal': filtered,
+                    'bpm': bpm, 'time_points': time_points, 'hr_values': hr_values,
+                    'rr_ms': hrv_data['rr_ms'], 'rr_clean': hrv_data['rr_clean'],
+                    'rr_mask': hrv_data['rr_mask'], 'hrv': hrv_data['hrv'],
+                    'peak_bpm': hrv_data['peak_bpm'], 'peaks': hrv_data['peaks'],
+                    'duration': session['duration'], 'source': 'default_video',
+                    'subject_info': subject_info,
+                }
+        threading.Thread(target=finalize, daemon=True).start()
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+
+    return jsonify({'status': 'ok', 'message': 'Live analysis started'})
+
+
+
+
+# ---------------------------------------------------------------------------
+# SSE stream for real-time data
+# ---------------------------------------------------------------------------
+
+@app.route('/api/stream')
+def stream():
+    """Server-Sent Events stream for live BPM and waveform data."""
+    def generate():
+        while True:
+            state = processor.get_state()
+            data = {
+                'bpm': round(state['bpm'], 1),
+                'hrv': state['hrv'],
+                'waveform': state['waveform'][-100:],
+                'is_running': state['is_running'],
+                'is_recording': state['is_recording'],
+                'status': state['status']
+            }
+            
+            # Expose SQI and artifact percent explicitly to top level
+            if 'sqi' in state['hrv']:
+                data['sqi'] = state['hrv']['sqi']
+            if 'artifact_percent' in state['hrv']:
+                data['artifact_percent'] = state['hrv']['artifact_percent']
+
+            yield f"data: {json.dumps(data)}\n\n"
+            time.sleep(1.0)
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        }
+    )
+
+@app.route('/api/video_feed')
+def video_feed():
+    """Live MJPEG camera feed."""
+    if not processor.is_running:
+        return Response(status=204)
+    return Response(
+        processor.generate_frames(),
+        mimetype='multipart/x-mixed-replace; boundary=frame'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Export API
+# ---------------------------------------------------------------------------
+
+@app.route('/api/export/<format_type>')
+def export_report(format_type):
+    """Export session reports in the specified format."""
+    if not last_session_data:
+        return jsonify({
+            'status': 'error',
+            'message': 'No session data. Analyze a video or record a session first.'
+        }), 400
+
+    if format_type not in ('csv', 'json', 'xlsx'):
+        return jsonify({
+            'status': 'error',
+            'message': f'Unsupported format: {format_type}. Use csv, json, or xlsx.'
+        }), 400
+
+    # Update subject info from query params if available
+    name = request.args.get('name', '').strip()
+    age = request.args.get('age', '').strip()
+    gender = request.args.get('gender', '').strip()
+    if name or age or gender:
+        last_session_data['subject_info'] = {'name': name, 'age': age, 'gender': gender}
+
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+
+    results = export_full_session(
+        last_session_data, EXPORT_DIR, formats=[format_type]
+    )
+
+    # Collect all generated files into a zip
+    all_files = []
+    for file_list in results.values():
+        all_files.extend(file_list)
+
+    if not all_files:
+        return jsonify({'status': 'error', 'message': 'No data to export.'}), 400
+
+    # If single file, send directly
+    if len(all_files) == 1:
+        return send_file(
+            all_files[0],
+            as_attachment=True,
+            download_name=os.path.basename(all_files[0])
+        )
+
+    # Multiple files: zip them
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for f in all_files:
+            zf.write(f, os.path.basename(f))
+    zip_buffer.seek(0)
+
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    return send_file(
+        zip_buffer,
+        as_attachment=True,
+        download_name=f'rppg_report_{timestamp}.zip',
+        mimetype='application/zip'
+    )
+
+
+@app.route('/api/session-summary')
+def session_summary():
+    """Get a summary of the last session."""
+    if not last_session_data:
+        return jsonify({'status': 'none', 'message': 'No session data.'})
+
+    return jsonify({
+        'status': 'ok',
+        'bpm': round(last_session_data.get('bpm', 0), 1),
+        'peak_bpm': round(last_session_data.get('peak_bpm', 0), 1),
+        'hrv': last_session_data.get('hrv', {}),
+        'source': last_session_data.get('source', ''),
+        'frames': len(last_session_data.get('r', [])),
+        'fps': last_session_data.get('fps', 0),
+    })
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+if __name__ == '__main__':
+    print("\n" + "=" * 50)
+    print("  rPPG Web Interface")
+    print("  Open http://localhost:5000 in your browser")
+    print("=" * 50 + "\n")
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
