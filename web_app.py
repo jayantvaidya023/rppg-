@@ -285,6 +285,15 @@ def analyze_default_video():
 # SSE stream for real-time data
 # ---------------------------------------------------------------------------
 
+@app.route('/api/default-video')
+def default_video_file():
+    """Serve the default video file for frontend playback."""
+    video_path = os.path.join(os.path.dirname(__file__), 'rPPG_video.mp4')
+    if os.path.exists(video_path):
+        from flask import send_file
+        return send_file(video_path, mimetype='video/mp4')
+    return "Not found", 404
+
 @app.route('/api/stream')
 def stream():
     """Server-Sent Events stream for live BPM and waveform data."""

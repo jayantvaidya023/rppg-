@@ -126,12 +126,12 @@ async function startCamera() {
         const video = document.getElementById('localVideo');
         video.srcObject = localStream;
         
-        // Hide legacy image stream, show local video
-        document.getElementById('videoStream').style.display = 'none';
+        // Hide any legacy elements, show local video
         video.style.display = 'block';
         
         // Flip preview if front camera
         video.style.transform = sourceVal === 'front' ? 'scaleX(-1)' : 'none';
+        video.play().catch(e => console.warn('Autoplay prevented:', e));
         
         document.getElementById('cameraPreviewCard').style.display = 'block';
         document.getElementById('btnStartCamera').disabled = true;
@@ -144,6 +144,7 @@ async function startCamera() {
         
         lastFpsTime = performance.now();
         framesCount = 0;
+        if (qualityCheckInterval) cancelAnimationFrame(qualityCheckInterval);
         qualityCheckInterval = requestAnimationFrame(checkQuality);
 
     } catch (err) {
@@ -157,9 +158,13 @@ function stopCamera() {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
     }
-    if (qualityCheckInterval) cancelAnimationFrame(qualityCheckInterval);
+    if (qualityCheckInterval) {
+        cancelAnimationFrame(qualityCheckInterval);
+        qualityCheckInterval = null;
+    }
     
     document.getElementById('localVideo').srcObject = null;
+    document.getElementById('localVideo').src = '';
     document.getElementById('cameraPreviewCard').style.display = 'none';
     
     document.getElementById('btnStartCamera').disabled = false;
@@ -220,6 +225,7 @@ function startRecording() {
     const timerDiv = document.getElementById('recordingTimer');
     timerDiv.style.display = 'block';
     
+    if (timerInterval) clearInterval(timerInterval);
     timerInterval = setInterval(() => {
         const seconds = Math.floor((Date.now() - recordStartTime) / 1000);
         const mm = String(Math.floor(seconds / 60)).padStart(2, '0');
@@ -238,7 +244,10 @@ function startRecording() {
 function stopRecording() {
     if (mediaRecorder && mediaRecorder.state !== "inactive") {
         mediaRecorder.stop();
-        clearInterval(timerInterval);
+        if (timerInterval) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+        }
         document.getElementById('recordingTimer').style.display = 'none';
         
         document.getElementById('btnStopRecord').disabled = true;
@@ -262,6 +271,16 @@ function uploadRecording() {
     document.getElementById('uploadProgressContainer').style.display = 'block';
     document.getElementById('uploadProgressBar').style.width = '20%'; // fake initial progress
     setStatus('Uploading video for analysis...');
+
+    // Play the recorded blob locally in the browser!
+    const videoURL = URL.createObjectURL(blob);
+    const video = document.getElementById('localVideo');
+    video.srcObject = null;
+    video.src = videoURL;
+    video.style.transform = 'none';
+    video.loop = false;
+    video.play().catch(e => console.warn('Playback prevented', e));
+    document.getElementById('cameraPreviewCard').style.display = 'block';
 
     // Use /api/analyze-video endpoint
     fetch('/api/analyze-video', {
@@ -290,9 +309,20 @@ function analyzeVideo() {
     const fileInput = document.getElementById('videoFile');
     if (!fileInput.files.length) { setStatus('Select a video file.'); return; }
 
+    const file = fileInput.files[0];
     const formData = new FormData();
-    formData.append('video', fileInput.files[0]);
+    formData.append('video', file);
     formData.append('subject_info', JSON.stringify(getSubjectInfo()));
+
+    // Play the uploaded file locally in the browser!
+    const videoURL = URL.createObjectURL(file);
+    const video = document.getElementById('localVideo');
+    video.srcObject = null;
+    video.src = videoURL;
+    video.style.transform = 'none';
+    video.loop = false;
+    video.play().catch(e => console.warn('Playback prevented', e));
+    document.getElementById('cameraPreviewCard').style.display = 'block';
 
     setStatus('Analyzing video...');
     fetch('/api/analyze-video', { method: 'POST', body: formData })
@@ -303,6 +333,16 @@ function analyzeVideo() {
 
 function analyzeDefault() {
     setStatus('Analyzing rPPG_video.mp4...');
+
+    // Play the default video locally in the browser!
+    const video = document.getElementById('localVideo');
+    video.srcObject = null;
+    video.src = '/api/default-video';
+    video.style.transform = 'none';
+    video.loop = false;
+    video.play().catch(e => console.warn('Playback prevented', e));
+    document.getElementById('cameraPreviewCard').style.display = 'block';
+
     fetch('/api/analyze-default', { 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -316,11 +356,9 @@ function analyzeDefault() {
 function handleAnalysisResult(data) {
     if (data.status === 'ok') {
         setStatus(data.message);
-        // Switch view to stream coming from server (for processing feedback)
-        document.getElementById('localVideo').style.display = 'none';
-        document.getElementById('videoStream').style.display = 'block';
-        document.getElementById('videoStream').src = '/api/video_feed?t=' + new Date().getTime();
+        // Ensure preview card is visible
         document.getElementById('cameraPreviewCard').style.display = 'block';
+        document.getElementById('localVideo').style.display = 'block';
         
         // Cleanup UI
         document.getElementById('uploadProgressContainer').style.display = 'none';
