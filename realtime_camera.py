@@ -138,6 +138,16 @@ class RealtimeProcessor:
             
         self.is_file_source = isinstance(source, str) and not source.startswith("http")
 
+        # Dynamically initialize buffers based on FPS
+        max_buf = int(self.buffer_seconds * self.fps)
+        with self._lock:
+            for key in self.roi_buffers:
+                self.roi_buffers[key] = {
+                    'r': deque(maxlen=max_buf),
+                    'g': deque(maxlen=max_buf),
+                    'b': deque(maxlen=max_buf)
+                }
+
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
 
@@ -195,87 +205,92 @@ class RealtimeProcessor:
 
     def _capture_loop(self):
         """Main capture and processing loop (runs in background thread)."""
+        print(f"DEBUG: [Processor] Thread Started (FPS: {self.fps})")
         last_process_time = 0
-        max_buffer = int(self.buffer_seconds * self.fps)
 
         while not self._stop_event.is_set():
-            ret, frame = self._camera.read()
-            if not ret:
-                if self.is_file_source:
-                    self.status = "Analysis complete"
-                    self.stop()
-                    break
-                time.sleep(0.01)
-                continue
+            try:
+                ret, frame = self._camera.read()
+                if not ret:
+                    if self.is_file_source:
+                        self.status = "Analysis complete"
+                        self.stop()
+                        break
+                    time.sleep(0.01)
+                    continue
 
-            with self._lock:
-                if self.status in ["Initializing camera...", "Idle", "Analysis complete"]:
-                    self.status = "Detecting face"
-
-            # Extract ROIs using MediaPipe (or fallback)
-            rois, face_rect = extract_multi_roi(
-                frame, self.face_mesh, self.face_cascade, self.last_face
-            )
-
-            # Draw ROI for the camera preview
-            display_frame = frame.copy()
-            if face_rect is not None:
-                fx, fy, fw, fh = face_rect
-                # Main face box (thin)
-                cv2.rectangle(display_frame, (fx, fy), (fx + fw, fy + fh), (255, 255, 255), 1)
-                
-                # Draw sub-ROIs (Visual indicator only)
-                # Forehead
-                fh_x1, fh_y1 = fx + fw // 4, fy + 10
-                fh_x2, fh_y2 = fx + 3 * fw // 4, fy + fh // 4
-                cv2.rectangle(display_frame, (fh_x1, fh_y1), (fh_x2, fh_y2), (0, 255, 0), 2)
-                cv2.putText(display_frame, "Forehead", (fh_x1, fh_y1 - 5), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
-                
-                # Cheeks
-                cw, ch = fw // 5, fh // 5
-                # Left Cheek
-                cv2.rectangle(display_frame, (fx + 10, fy + fh // 2), 
-                              (fx + 10 + cw, fy + fh // 2 + ch), (0, 255, 255), 2)
-                # Right Cheek
-                cv2.rectangle(display_frame, (fx + fw - 10 - cw, fy + fh // 2), 
-                              (fx + fw - 10, fy + fh // 2 + ch), (0, 255, 255), 2)
-
-            ret_jpg, jpeg = cv2.imencode('.jpg', display_frame)
-            if ret_jpg:
                 with self._lock:
-                    self.current_frame_jpeg = jpeg.tobytes()
+                    if self.status in ["Initializing camera...", "Idle", "Analysis complete"]:
+                        self.status = "Detecting face"
 
-            if rois is None:
+                # Extract ROIs using MediaPipe (or fallback)
+                rois, face_rect = extract_multi_roi(
+                    frame, self.face_mesh, self.face_cascade, self.last_face
+                )
+
+                # Draw ROI for the camera preview
+                display_frame = frame.copy()
+                if face_rect is not None:
+                    fx, fy, fw, fh = face_rect
+                    # Main face box (thin)
+                    cv2.rectangle(display_frame, (fx, fy), (fx + fw, fy + fh), (255, 255, 255), 1)
+                    
+                    # Draw sub-ROIs (Visual indicator only)
+                    # Forehead
+                    fh_x1, fh_y1 = fx + fw // 4, fy + 10
+                    fh_x2, fh_y2 = fx + 3 * fw // 4, fy + fh // 4
+                    cv2.rectangle(display_frame, (fh_x1, fh_y1), (fh_x2, fh_y2), (0, 255, 0), 2)
+                    cv2.putText(display_frame, "Forehead", (fh_x1, fh_y1 - 5), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+                    
+                    # Cheeks
+                    cw, ch = fw // 5, fh // 5
+                    # Left Cheek
+                    cv2.rectangle(display_frame, (fx + 10, fy + fh // 2), 
+                                  (fx + 10 + cw, fy + fh // 2 + ch), (0, 255, 255), 2)
+                    # Right Cheek
+                    cv2.rectangle(display_frame, (fx + fw - 10 - cw, fy + fh // 2), 
+                                  (fx + fw - 10, fy + fh // 2 + ch), (0, 255, 255), 2)
+
+                ret_jpg, jpeg = cv2.imencode('.jpg', display_frame)
+                if ret_jpg:
+                    with self._lock:
+                        self.current_frame_jpeg = jpeg.tobytes()
+
+                if rois is None:
+                    with self._lock:
+                        self.status = "Searching for face..."
+                    continue
+
+                self.last_face = face_rect
+                now = time.time()
+
                 with self._lock:
-                    self.status = "Searching for face..."
-                continue
-
-            self.last_face = face_rect
-            now = time.time()
-
-            with self._lock:
-                for key in rois:
-                    self.roi_buffers[key]['r'].append(rois[key][0])
-                    self.roi_buffers[key]['g'].append(rois[key][1])
-                    self.roi_buffers[key]['b'].append(rois[key][2])
-                self.timestamps.append(now)
-
-                # Record if active
-                if self.is_recording:
                     for key in rois:
-                        self.recorded_rois[key]['r'].append(rois[key][0])
-                        self.recorded_rois[key]['g'].append(rois[key][1])
-                        self.recorded_rois[key]['b'].append(rois[key][2])
-                    self.recorded_timestamps.append(now)
+                        self.roi_buffers[key]['r'].append(rois[key][0])
+                        self.roi_buffers[key]['g'].append(rois[key][1])
+                        self.roi_buffers[key]['b'].append(rois[key][2])
+                    self.timestamps.append(now)
 
-            # Process at update_interval
-            if now - last_process_time >= self.update_interval:
-                self._process_buffer()
-                last_process_time = now
+                    # Record if active
+                    if self.is_recording:
+                        for key in rois:
+                            self.recorded_rois[key]['r'].append(rois[key][0])
+                            self.recorded_rois[key]['g'].append(rois[key][1])
+                            self.recorded_rois[key]['b'].append(rois[key][2])
+                        self.recorded_timestamps.append(now)
 
-            # ~30 fps capture rate
-            time.sleep(max(0.001, 1.0 / self.fps - 0.005))
+                # Process at update_interval
+                if now - last_process_time >= self.update_interval:
+                    self._process_buffer()
+                    last_process_time = now
+
+                # ~30 fps capture rate
+                time.sleep(max(0.001, 1.0 / self.fps - 0.005))
+            
+            except Exception as e:
+                print(f"CRITICAL: Capture loop exception: {e}")
+                time.sleep(1.0)
 
     def generate_frames(self):
         """Generator for Flask MJPEG streaming."""

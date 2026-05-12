@@ -114,15 +114,21 @@ def extract_multi_roi(frame, face_mesh=None, fallback_cascade=None, last_face=No
             return None, rect
         return {'forehead': (r, g, b), 'cheek_l': (r, g, b), 'cheek_r': (r, g, b)}, rect
 
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-    results = face_mesh.detect(mp_image)
-
-    if not results.face_landmarks:
-        # Fallback to Haar
+    try:
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        results = face_mesh.detect(mp_image)
+        
+        if not results.face_landmarks:
+            # Fallback to Haar
+            r, g, b, rect = extract_forehead_roi(frame, fallback_cascade, last_face)
+            if r is None: return None, rect
+            return {'forehead': (r, g, b), 'cheek_l': (r, g, b), 'cheek_r': (r, g, b)}, rect
+            
+    except Exception as e:
+        print(f"DEBUG: MediaPipe Runtime Error: {e}. Falling back to Haar.")
         r, g, b, rect = extract_forehead_roi(frame, fallback_cascade, last_face)
-        if r is None:
-            return None, rect
+        if r is None: return None, rect
         return {'forehead': (r, g, b), 'cheek_l': (r, g, b), 'cheek_r': (r, g, b)}, rect
 
     landmarks = results.face_landmarks[0]
