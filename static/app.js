@@ -135,7 +135,12 @@ async function startCamera() {
         
         // Flip preview if front camera
         video.style.transform = sourceVal === 'front' ? 'scaleX(-1)' : 'none';
-        video.play().catch(e => console.warn('Autoplay prevented:', e));
+        
+        // --- FIX: Explicitly await play() for HTTPS/Mobile compliance ---
+        await video.play().catch(e => {
+            console.warn('DEBUG: Autoplay prevented, waiting for user interaction:', e);
+            setStatus("Camera ready. Please tap the video to start preview if it doesn't play.");
+        });
         
         document.getElementById('cameraPreviewCard').style.display = 'block';
         document.getElementById('btnStartCamera').disabled = true;
@@ -391,6 +396,7 @@ function analyzeDefault() {
 }
 
 function handleAnalysisResult(data) {
+    console.log("DEBUG: Analysis result from server:", data);
     if (data.status === 'ok') {
         setStatus(data.message);
         // Ensure preview card is visible
@@ -403,10 +409,11 @@ function handleAnalysisResult(data) {
         document.getElementById('uploadProgressContainer').style.display = 'none';
         document.getElementById('uploadProgressBar').style.width = '0%';
         
-        statusBadge.textContent = 'Processing...';
+        statusBadge.textContent = 'Analyzing...';
         statusBadge.className = 'status-badge active';
         startSSE();
     } else {
+        console.error("DEBUG: Analysis Error", data.message);
         setStatus('Error: ' + data.message);
         document.getElementById('uploadProgressContainer').style.display = 'none';
     }

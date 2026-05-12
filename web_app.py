@@ -298,42 +298,53 @@ def default_video_file():
 def stream():
     """Server-Sent Events stream for live BPM and waveform data."""
     def generate():
-        print("SSE: Client connected to stream")
-        while True:
-            try:
+        client_id = f"client_{int(time.time())}"
+        print(f"[{client_id}] SSE: Client connected")
+        
+        # Immediate heartbeat/handshake
+        yield f"data: {json.dumps({'status': 'Connected to server stream'})}\n\n"
+        
+        try:
+            while True:
                 state = processor.get_state()
-                # If we are in initialization or idle, send status heartbeat
                 data = {
                     'bpm': round(state['bpm'], 1),
                     'hrv': state['hrv'],
-                    'waveform': state['waveform'][-100:], # last 100 pts for scrolling
+                    'waveform': state['waveform'][-100:],
                     'is_running': state['is_running'],
                     'is_recording': state['is_recording'],
                     'status': state['status'],
-                    'timestamp': time.time()
+                    'timestamp': time.time(),
+                    'debug': {
+                        'buffer_size': state.get('buffer_size', 0),
+                        'fps': state.get('fps', 0)
+                    }
                 }
                 
-                # Ensure SQI and artifact percent are included if present
+                # Expose SQI and artifact percent explicitly
                 if state['hrv']:
                     data['sqi'] = state['hrv'].get('sqi', 0.0)
                     data['artifact_percent'] = state['hrv'].get('artifact_percent', 0.0)
-                else:
-                    data['sqi'] = 0.0
-                    data['artifact_percent'] = 0.0
 
-                yield f"data: {json.dumps(data)}\n\n"
-            except Exception as e:
-                print(f"SSE Error: {e}")
+                payload = json.dumps(data)
+                if state['is_running']:
+                    print(f"[{client_id}] SSE: Yielding data (BPM: {data['bpm']}, Status: {data['status']})")
                 
-            time.sleep(0.1) # 10Hz update rate
+                yield f"data: {payload}\n\n"
+                time.sleep(0.1)
+        except Exception as e:
+            print(f"[{client_id}] SSE: Connection closed/error: {e}")
+        finally:
+            print(f"[{client_id}] SSE: Stream terminated")
 
     return Response(
         generate(),
         mimetype='text/event-stream',
         headers={
-            'Cache-Control': 'no-cache',
+            'Cache-Control': 'no-cache, no-transform',
             'X-Accel-Buffering': 'no',
-            'Connection': 'keep-alive'
+            'Connection': 'keep-alive',
+            'Transfer-Encoding': 'chunked'
         }
     )
 

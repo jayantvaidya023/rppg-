@@ -1,0 +1,22 @@
+{
+  "subject_info": {
+    "name": "",
+    "age": "",
+    "gender": ""
+  },
+  "session_timestamp": "2026-05-12_22-50-54",
+  "fps": 30.0,
+  "total_frames": 1843,
+  "duration_seconds": 61.43,
+  "bpm_fft": 64.46011937059143,
+  "hrv_summary": {
+    "mean_rr": 940.4173764859386,
+    "sdnn": 150.4584540289955,
+    "rmssd": 84.96157570860586,
+    "pnn50": 46.774193548387096,
+    "mean_hr": 65.73227470800515,
+    "min_hr": 50.0,
+    "max_hr": 100.96475270829285,
+    "nn_count": 63
+  }
+}

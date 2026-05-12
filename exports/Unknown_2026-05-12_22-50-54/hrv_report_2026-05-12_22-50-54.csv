@@ -1,0 +1,16 @@
+metric,value,unit,description
+mean_rr,940.4173764859386,ms,Mean RR interval
+sdnn,150.4584540289955,ms,Standard deviation of NN intervals
+rmssd,84.96157570860586,ms,Root mean square of successive differences
+pnn50,46.774193548387096,%,Percentage of successive differences > 50ms
+mean_hr,65.73227470800515,BPM,Mean heart rate from RR intervals
+min_hr,50.0,BPM,Minimum instantaneous heart rate
+max_hr,100.96475270829285,BPM,Maximum instantaneous heart rate
+nn_count,63,count,Number of NN intervals analyzed
+bpm_fft,64.46011937059143,,Session metadata
+duration_frames,1843,,Session metadata
+duration_seconds,61.43,,Session metadata
+fps,30.0,,Session metadata
+timestamp,2026-05-12_22-50-54,,Session metadata
+sqi_score,0.0,,Session metadata
+artifact_percent,0.0,,Session metadata
