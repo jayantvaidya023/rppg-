@@ -285,6 +285,20 @@ def analyze_default_video():
 # SSE stream for real-time data
 # ---------------------------------------------------------------------------
 
+@app.route('/api/test-stream')
+def test_stream():
+    """Minimal SSE verification route."""
+    def generate():
+        print("DEBUG: Test Stream Client Connected")
+        count = 0
+        while True:
+            count += 1
+            data = {"bpm": 60 + (count % 20), "status": "Test Connection Active", "timestamp": time.time()}
+            print(f"DEBUG: Sending Test Payload #{count}")
+            yield f"data: {json.dumps(data)}\n\n"
+            time.sleep(1.0)
+    return Response(generate(), mimetype='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
 @app.route('/api/default-video')
 def default_video_file():
     """Serve the default video file for frontend playback."""
@@ -299,14 +313,16 @@ def stream():
     """Server-Sent Events stream for live BPM and waveform data."""
     def generate():
         client_id = f"client_{int(time.time())}"
-        print(f"[{client_id}] SSE: Client connected")
+        print(f"[{client_id}] SSE: Connection established")
         
-        # Immediate heartbeat/handshake
-        yield f"data: {json.dumps({'status': 'Connected to server stream'})}\n\n"
+        last_heartbeat = 0
         
         try:
             while True:
+                now = time.time()
                 state = processor.get_state()
+                
+                # Construct data
                 data = {
                     'bpm': round(state['bpm'], 1),
                     'hrv': state['hrv'],
@@ -314,28 +330,29 @@ def stream():
                     'is_running': state['is_running'],
                     'is_recording': state['is_recording'],
                     'status': state['status'],
-                    'timestamp': time.time(),
-                    'debug': {
-                        'buffer_size': state.get('buffer_size', 0),
-                        'fps': state.get('fps', 0)
-                    }
+                    'timestamp': now
                 }
                 
-                # Expose SQI and artifact percent explicitly
                 if state['hrv']:
                     data['sqi'] = state['hrv'].get('sqi', 0.0)
                     data['artifact_percent'] = state['hrv'].get('artifact_percent', 0.0)
 
-                payload = json.dumps(data)
-                if state['is_running']:
-                    print(f"[{client_id}] SSE: Yielding data (BPM: {data['bpm']}, Status: {data['status']})")
+                # Send data if processing OR send heartbeat to keep connection alive
+                if state['is_running'] or (now - last_heartbeat > 2.0):
+                    if not state['is_running']:
+                        data['heartbeat'] = True
+                        data['status'] = "Waiting for data..."
+                    
+                    payload = json.dumps(data)
+                    # print(f"[{client_id}] SSE: Sending payload (running={state['is_running']})")
+                    yield f"data: {payload}\n\n"
+                    last_heartbeat = now
                 
-                yield f"data: {payload}\n\n"
                 time.sleep(0.1)
         except Exception as e:
-            print(f"[{client_id}] SSE: Connection closed/error: {e}")
+            print(f"[{client_id}] SSE: Stream exception: {e}")
         finally:
-            print(f"[{client_id}] SSE: Stream terminated")
+            print(f"[{client_id}] SSE: Connection terminated")
 
     return Response(
         generate(),

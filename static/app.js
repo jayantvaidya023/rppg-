@@ -423,30 +423,40 @@ function handleAnalysisResult(data) {
 function startSSE() {
     if (eventSource) eventSource.close();
     
-    console.log("DEBUG: Starting SSE Stream Connection...");
+    console.log("DEBUG: [SSE] Initializing connection to /api/stream...");
     eventSource = new EventSource('/api/stream');
     let startTime = Date.now();
     hrTimeData = { times: [], values: [] };
     analysisActive = true;
     
-    eventSource.onopen = () => console.log("DEBUG: SSE Stream Opened ✅");
-    eventSource.onerror = (err) => console.warn("DEBUG: SSE Stream Error/Reconnect ⚠️", err);
+    eventSource.onopen = () => {
+        console.log("DEBUG: [SSE] Connection established ✅");
+        statusBadge.textContent = 'Stream Connected';
+    };
+
+    eventSource.onerror = (err) => {
+        console.warn("DEBUG: [SSE] Connection error/timeout ⚠️. Attempting reconnect in 3s...");
+        eventSource.close();
+        statusBadge.textContent = 'Reconnecting...';
+        setTimeout(startSSE, 3000);
+    };
 
     eventSource.onmessage = function(e) {
         try {
             const data = JSON.parse(e.data);
-            if (debugMode) console.log("DEBUG: Incoming SSE Packet", data);
+            
+            if (data.heartbeat) {
+                console.log("DEBUG: [SSE] Heartbeat received 💓");
+                if (!analysisActive) statusMessage.textContent = "System ready. Analysis waiting...";
+                return;
+            }
+
+            if (debugMode) console.log("DEBUG: [SSE] Payload received:", data);
             
             if (data.status) {
                 statusMessage.textContent = `Status: ${data.status}`;
-                if (data.status === "Analysis complete" || data.status === "Idle") {
+                if (data.status === "Analysis complete" || data.status === "Idle" || data.status === "Waiting for data...") {
                     statusBadge.textContent = data.status;
-                    statusBadge.className = 'status-badge';
-                    
-                    if (data.status === "Analysis complete") {
-                        console.log("DEBUG: Analysis complete signal received");
-                        // togglePreview(false); // keep it on for final frame?
-                    }
                 } else {
                     statusBadge.textContent = 'Analyzing...';
                     statusBadge.className = 'status-badge active';
@@ -455,9 +465,9 @@ function startSSE() {
 
             // Update BPM
             if (data.bpm > 0) {
+                console.log("DEBUG: [UI] Updating BPM:", data.bpm);
                 updateBPM(data.bpm);
                 
-                // Add to time chart if it's a new point
                 let elapsedSec = (Date.now() - startTime) / 1000;
                 if (hrTimeData.times.length === 0 || elapsedSec - hrTimeData.times[hrTimeData.times.length-1] > 0.5) {
                     hrTimeData.times.push(elapsedSec);
@@ -469,32 +479,31 @@ function startSSE() {
                     drawHRTime(hrTimeCanvas, hrTimeData.times, hrTimeData.values);
                 }
             }
-
-            // Update HRV
+            
+            // ... [Rest of update logic for HRV, SQI, etc.] ...
             if (data.hrv && (data.hrv.mean_rr > 0 || data.hrv.sdnn > 0)) {
                 updateHRV(data.hrv, data.hrv.peak_bpm || 0);
             }
 
-            // Update Quality Metrics
             if (data.sqi !== undefined) {
                 const sqiEl = document.getElementById('sqiValue');
                 sqiEl.textContent = `SQI: ${data.sqi.toFixed(1)}%`;
                 sqiEl.style.color = data.sqi > 70 ? '#4cd137' : (data.sqi > 40 ? '#fbc531' : '#e84118');
             }
+            
             if (data.artifact_percent !== undefined) {
                 const artEl = document.getElementById('artifactValue');
                 artEl.textContent = `Artifacts: ${data.artifact_percent.toFixed(1)}%`;
                 artEl.style.color = data.artifact_percent < 10 ? '#4cd137' : (data.artifact_percent < 25 ? '#fbc531' : '#e84118');
             }
 
-            // Update Waveform
             if (data.waveform && data.waveform.length > 0) {
                 waveformData = data.waveform;
                 drawWaveform(waveformCanvas, waveformData, '#34d399');
             }
 
         } catch(err) {
-            console.error("DEBUG: SSE Parse Error", err);
+            console.error("DEBUG: [SSE] Parse Error", err);
         }
     };
 }
