@@ -4,6 +4,8 @@
 let eventSource = null;
 let waveformData = [];
 let hrTimeData = { times: [], values: [] };
+let analysisActive = false;
+let debugMode = true; // Enabled for this fix
 
 // Client-side recording state
 let localStream = null;
@@ -32,6 +34,8 @@ const sourceSelect = document.getElementById('sourceSelect');
 const ipInput = document.getElementById('ipInput');
 const waveformCanvas = document.getElementById('waveformCanvas');
 const hrTimeCanvas = document.getElementById('hrTimeCanvas');
+const localVideo = document.getElementById('localVideo');
+const mjpegFeed = document.getElementById('mjpegFeed');
 
 // HRV refs
 const sdnnValue = document.getElementById('sdnnValue');
@@ -138,10 +142,22 @@ async function startCamera() {
         document.getElementById('btnStopCamera').disabled = false;
         document.getElementById('btnStartRecord').disabled = false;
         
-        statusBadge.textContent = 'Camera Ready';
+        statusBadge.textContent = 'Camera Active';
         statusBadge.className = 'status-badge active';
-        setStatus('Camera started. Position your face in the oval and ensure good lighting.');
+        setStatus('Camera started. Position your face. Analysis will start automatically.');
         
+        // --- FIX: Start analysis backend and SSE immediately ---
+        fetch('/api/start-camera', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: 0 }) // default webcam
+        }).then(r => r.json()).then(data => {
+            if (data.status === 'ok') {
+                togglePreview(true); // Switch to processed feed
+                startSSE();
+            }
+        });
+
         lastFpsTime = performance.now();
         framesCount = 0;
         if (qualityCheckInterval) cancelAnimationFrame(qualityCheckInterval);
@@ -150,6 +166,22 @@ async function startCamera() {
     } catch (err) {
         console.error(err);
         setStatus('Camera Error: ' + err.message + '. Please allow camera permissions.');
+    }
+}
+
+function togglePreview(processed) {
+    if (processed) {
+        localVideo.style.display = 'none';
+        mjpegFeed.style.display = 'block';
+        mjpegFeed.src = '/api/video_feed?t=' + Date.now();
+        document.getElementById('faceOverlay').style.display = 'none';
+        console.log("DEBUG: Switched to Processed MJPEG Feed");
+    } else {
+        localVideo.style.display = 'block';
+        mjpegFeed.style.display = 'none';
+        mjpegFeed.src = '';
+        document.getElementById('faceOverlay').style.display = 'block';
+        console.log("DEBUG: Switched to Raw Video Feed");
     }
 }
 
@@ -165,7 +197,12 @@ function stopCamera() {
     
     document.getElementById('localVideo').srcObject = null;
     document.getElementById('localVideo').src = '';
+    togglePreview(false);
     document.getElementById('cameraPreviewCard').style.display = 'none';
+    
+    // Stop backend
+    fetch('/api/stop-camera', { method: 'POST' });
+    stopSSE();
     
     document.getElementById('btnStartCamera').disabled = false;
     document.getElementById('btnStopCamera').disabled = true;
@@ -358,7 +395,9 @@ function handleAnalysisResult(data) {
         setStatus(data.message);
         // Ensure preview card is visible
         document.getElementById('cameraPreviewCard').style.display = 'block';
-        document.getElementById('localVideo').style.display = 'block';
+        
+        // --- FIX: Switch to processed MJPEG feed for video files too ---
+        togglePreview(true);
         
         // Cleanup UI
         document.getElementById('uploadProgressContainer').style.display = 'none';
@@ -376,67 +415,80 @@ function handleAnalysisResult(data) {
 // ---- SSE Stream ----
 function startSSE() {
     if (eventSource) eventSource.close();
+    
+    console.log("DEBUG: Starting SSE Stream Connection...");
     eventSource = new EventSource('/api/stream');
     let startTime = Date.now();
     hrTimeData = { times: [], values: [] };
+    analysisActive = true;
     
+    eventSource.onopen = () => console.log("DEBUG: SSE Stream Opened ✅");
+    eventSource.onerror = (err) => console.warn("DEBUG: SSE Stream Error/Reconnect ⚠️", err);
+
     eventSource.onmessage = function(e) {
         try {
             const data = JSON.parse(e.data);
+            if (debugMode) console.log("DEBUG: Incoming SSE Packet", data);
             
             if (data.status) {
-                setStatus(data.status);
-                if (data.status === "Analysis complete") {
-                    stopSSE();
-                    statusBadge.textContent = 'Analysis Complete';
+                statusMessage.textContent = `Status: ${data.status}`;
+                if (data.status === "Analysis complete" || data.status === "Idle") {
+                    statusBadge.textContent = data.status;
                     statusBadge.className = 'status-badge';
-                    document.getElementById('btnStartCamera').disabled = false;
-                    document.getElementById('btnStopCamera').disabled = true;
-                    document.getElementById('btnStartRecord').disabled = true;
-                    document.getElementById('btnStopRecord').disabled = true;
                     
-                    // fetch final summary to update UI
-                    fetch('/api/session-summary').then(r=>r.json()).then(summary => {
-                        if (summary.status === 'ok') {
-                            setStatus(`Analysis Complete: ${summary.bpm} BPM | ${summary.frames} frames`);
-                            updateBPM(summary.bpm);
-                            updateHRV(summary.hrv, summary.peak_bpm);
-                        }
-                    });
+                    if (data.status === "Analysis complete") {
+                        console.log("DEBUG: Analysis complete signal received");
+                        // togglePreview(false); // keep it on for final frame?
+                    }
+                } else {
+                    statusBadge.textContent = 'Analyzing...';
+                    statusBadge.className = 'status-badge active';
                 }
             }
 
-            if (data.bpm > 0 && data.status !== "Analysis complete") {
+            // Update BPM
+            if (data.bpm > 0) {
                 updateBPM(data.bpm);
+                
+                // Add to time chart if it's a new point
                 let elapsedSec = (Date.now() - startTime) / 1000;
-                hrTimeData.times.push(elapsedSec);
-                hrTimeData.values.push(data.bpm);
-                if (hrTimeData.times.length > 100) {
-                    hrTimeData.times.shift();
-                    hrTimeData.values.shift();
+                if (hrTimeData.times.length === 0 || elapsedSec - hrTimeData.times[hrTimeData.times.length-1] > 0.5) {
+                    hrTimeData.times.push(elapsedSec);
+                    hrTimeData.values.push(data.bpm);
+                    if (hrTimeData.times.length > 100) {
+                        hrTimeData.times.shift();
+                        hrTimeData.values.shift();
+                    }
+                    drawHRTime(hrTimeCanvas, hrTimeData.times, hrTimeData.values);
                 }
-                drawHRTime(hrTimeCanvas, hrTimeData.times, hrTimeData.values);
             }
-            if (data.hrv && data.hrv.mean_rr > 0) {
-                updateHRV(data.hrv, 0);
+
+            // Update HRV
+            if (data.hrv && (data.hrv.mean_rr > 0 || data.hrv.sdnn > 0)) {
+                updateHRV(data.hrv, data.hrv.peak_bpm || 0);
             }
+
+            // Update Quality Metrics
             if (data.sqi !== undefined) {
-                document.getElementById('sqiValue').textContent = `SQI: ${data.sqi.toFixed(1)}%`;
-                if (data.sqi > 80) document.getElementById('sqiValue').style.color = '#4cd137';
-                else if (data.sqi > 50) document.getElementById('sqiValue').style.color = '#fbc531';
-                else document.getElementById('sqiValue').style.color = '#e84118';
+                const sqiEl = document.getElementById('sqiValue');
+                sqiEl.textContent = `SQI: ${data.sqi.toFixed(1)}%`;
+                sqiEl.style.color = data.sqi > 70 ? '#4cd137' : (data.sqi > 40 ? '#fbc531' : '#e84118');
             }
             if (data.artifact_percent !== undefined) {
-                document.getElementById('artifactValue').textContent = `Artifacts: ${data.artifact_percent.toFixed(1)}%`;
-                if (data.artifact_percent < 5) document.getElementById('artifactValue').style.color = '#4cd137';
-                else if (data.artifact_percent < 15) document.getElementById('artifactValue').style.color = '#fbc531';
-                else document.getElementById('artifactValue').style.color = '#e84118';
+                const artEl = document.getElementById('artifactValue');
+                artEl.textContent = `Artifacts: ${data.artifact_percent.toFixed(1)}%`;
+                artEl.style.color = data.artifact_percent < 10 ? '#4cd137' : (data.artifact_percent < 25 ? '#fbc531' : '#e84118');
             }
+
+            // Update Waveform
             if (data.waveform && data.waveform.length > 0) {
                 waveformData = data.waveform;
                 drawWaveform(waveformCanvas, waveformData, '#34d399');
             }
-        } catch(err) {}
+
+        } catch(err) {
+            console.error("DEBUG: SSE Parse Error", err);
+        }
     };
 }
 

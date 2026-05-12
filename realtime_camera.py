@@ -219,16 +219,34 @@ class RealtimeProcessor:
             display_frame = frame.copy()
             if face_rect is not None:
                 fx, fy, fw, fh = face_rect
-                cv2.rectangle(display_frame, (fx, fy), (fx + fw, fy + fh), (255, 0, 0), 2)
-                # We can draw the ROIs if we want, but FaceMesh landmarks are complex
-                # We'll just keep the boxes to show we found a face
-            
+                # Main face box (thin)
+                cv2.rectangle(display_frame, (fx, fy), (fx + fw, fy + fh), (255, 255, 255), 1)
+                
+                # Draw sub-ROIs (Visual indicator only)
+                # Forehead
+                fh_x1, fh_y1 = fx + fw // 4, fy + 10
+                fh_x2, fh_y2 = fx + 3 * fw // 4, fy + fh // 4
+                cv2.rectangle(display_frame, (fh_x1, fh_y1), (fh_x2, fh_y2), (0, 255, 0), 2)
+                cv2.putText(display_frame, "Forehead", (fh_x1, fh_y1 - 5), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+                
+                # Cheeks
+                cw, ch = fw // 5, fh // 5
+                # Left Cheek
+                cv2.rectangle(display_frame, (fx + 10, fy + fh // 2), 
+                              (fx + 10 + cw, fy + fh // 2 + ch), (0, 255, 255), 2)
+                # Right Cheek
+                cv2.rectangle(display_frame, (fx + fw - 10 - cw, fy + fh // 2), 
+                              (fx + fw - 10, fy + fh // 2 + ch), (0, 255, 255), 2)
+
             ret_jpg, jpeg = cv2.imencode('.jpg', display_frame)
             if ret_jpg:
                 with self._lock:
                     self.current_frame_jpeg = jpeg.tobytes()
 
             if rois is None:
+                with self._lock:
+                    self.status = "Searching for face..."
                 continue
 
             self.last_face = face_rect

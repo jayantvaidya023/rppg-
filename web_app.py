@@ -298,25 +298,34 @@ def default_video_file():
 def stream():
     """Server-Sent Events stream for live BPM and waveform data."""
     def generate():
+        print("SSE: Client connected to stream")
         while True:
-            state = processor.get_state()
-            data = {
-                'bpm': round(state['bpm'], 1),
-                'hrv': state['hrv'],
-                'waveform': state['waveform'][-100:],
-                'is_running': state['is_running'],
-                'is_recording': state['is_recording'],
-                'status': state['status']
-            }
-            
-            # Expose SQI and artifact percent explicitly to top level
-            if 'sqi' in state['hrv']:
-                data['sqi'] = state['hrv']['sqi']
-            if 'artifact_percent' in state['hrv']:
-                data['artifact_percent'] = state['hrv']['artifact_percent']
+            try:
+                state = processor.get_state()
+                # If we are in initialization or idle, send status heartbeat
+                data = {
+                    'bpm': round(state['bpm'], 1),
+                    'hrv': state['hrv'],
+                    'waveform': state['waveform'][-100:], # last 100 pts for scrolling
+                    'is_running': state['is_running'],
+                    'is_recording': state['is_recording'],
+                    'status': state['status'],
+                    'timestamp': time.time()
+                }
+                
+                # Ensure SQI and artifact percent are included if present
+                if state['hrv']:
+                    data['sqi'] = state['hrv'].get('sqi', 0.0)
+                    data['artifact_percent'] = state['hrv'].get('artifact_percent', 0.0)
+                else:
+                    data['sqi'] = 0.0
+                    data['artifact_percent'] = 0.0
 
-            yield f"data: {json.dumps(data)}\n\n"
-            time.sleep(0.1)
+                yield f"data: {json.dumps(data)}\n\n"
+            except Exception as e:
+                print(f"SSE Error: {e}")
+                
+            time.sleep(0.1) # 10Hz update rate
 
     return Response(
         generate(),
@@ -324,6 +333,7 @@ def stream():
         headers={
             'Cache-Control': 'no-cache',
             'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive'
         }
     )
 
