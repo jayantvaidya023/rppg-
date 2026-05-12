@@ -20,7 +20,8 @@ from rppg_core import (
     get_face_mesh
 )
 from preprocessing import preprocess_signal
-from hrv_analysis import analyze_hrv
+from hrv_analysis import analyze_hrv, compute_sqi
+from collections import deque
 
 
 class CameraSource:
@@ -75,15 +76,15 @@ class RealtimeProcessor:
     Thread-safe for integration with the Flask web app.
     """
 
-    def __init__(self, buffer_seconds=10, update_interval=1.0):
+    def __init__(self, buffer_seconds=10, update_interval=0.5):
         self.buffer_seconds = buffer_seconds
         self.update_interval = update_interval
 
-        # Signal buffers
+        # Signal buffers (Deques for O(1) performance)
         self.roi_buffers = {
-            'forehead': {'r': [], 'g': [], 'b': []},
-            'cheek_l': {'r': [], 'g': [], 'b': []},
-            'cheek_r': {'r': [], 'g': [], 'b': []}
+            'forehead': {'r': deque(maxlen=300), 'g': deque(maxlen=300), 'b': deque(maxlen=300)},
+            'cheek_l': {'r': deque(maxlen=300), 'g': deque(maxlen=300), 'b': deque(maxlen=300)},
+            'cheek_r': {'r': deque(maxlen=300), 'g': deque(maxlen=300), 'b': deque(maxlen=300)}
         }
         self.timestamps = []
 
@@ -259,14 +260,6 @@ class RealtimeProcessor:
                     self.roi_buffers[key]['b'].append(rois[key][2])
                 self.timestamps.append(now)
 
-                # Trim to rolling window
-                if len(self.roi_buffers['forehead']['r']) > max_buffer:
-                    for key in self.roi_buffers:
-                        self.roi_buffers[key]['r'] = self.roi_buffers[key]['r'][-max_buffer:]
-                        self.roi_buffers[key]['g'] = self.roi_buffers[key]['g'][-max_buffer:]
-                        self.roi_buffers[key]['b'] = self.roi_buffers[key]['b'][-max_buffer:]
-                    self.timestamps = self.timestamps[-max_buffer:]
-
                 # Record if active
                 if self.is_recording:
                     for key in rois:
@@ -295,70 +288,50 @@ class RealtimeProcessor:
             time.sleep(0.03)
 
     def _process_buffer(self):
-        """Run POS + FFT on the current buffer (Multi-ROI & Dual Mode)."""
-        from hrv_analysis import compute_sqi
-        
+        """Run optimized POS + FFT on forehead ROI for real-time performance."""
         with self._lock:
-            if len(self.roi_buffers['forehead']['r']) < 30:
-                self.status = f"Detecting face... ({len(self.roi_buffers['forehead']['r'])}/30)"
+            buffer_len = len(self.roi_buffers['forehead']['r'])
+            fps = self.fps
+            
+            if buffer_len < 60: # Need at least 2 seconds for stable FFT
+                self.status = f"Buffering... ({buffer_len}/60)"
                 return
 
             self.status = "Processing pulse"
             
-            # Extract ROIs
-            signals = {}
-            for roi in ['forehead', 'cheek_l', 'cheek_r']:
-                r = np.array(self.roi_buffers[roi]['r'])
-                g = np.array(self.roi_buffers[roi]['g'])
-                b = np.array(self.roi_buffers[roi]['b'])
-                
-                # POS Windowed
-                pos = compute_windowed_signal(r, g, b, self.fps, method="pos")
-                pos_filtered = bandpass_filter(pos, self.fps)
-                pos_sqi = compute_sqi(pos_filtered, self.fps)
-                
-                # CHROM Windowed
-                chrom = compute_windowed_signal(r, g, b, self.fps, method="chrom")
-                chrom_filtered = bandpass_filter(chrom, self.fps)
-                chrom_sqi = compute_sqi(chrom_filtered, self.fps)
-                
-                if chrom_sqi > pos_sqi:
-                    signals[roi] = {'sig': chrom_filtered, 'sqi': chrom_sqi, 'method': 'chrom'}
-                else:
-                    signals[roi] = {'sig': pos_filtered, 'sqi': pos_sqi, 'method': 'pos'}
-
-        # Fuse signals using SQI-weighted averaging
-        total_sqi = sum(s['sqi'] for s in signals.values())
-        if total_sqi > 1e-10:
-            fused_signal = sum(s['sig'] * (s['sqi'] / total_sqi) for s in signals.values())
-        else:
-            fused_signal = signals['forehead']['sig']
+            # Optimized: Only process Forehead ROI in real-time to save CPU
+            r = np.array(self.roi_buffers['forehead']['r'])
+            g = np.array(self.roi_buffers['forehead']['g'])
+            b = np.array(self.roi_buffers['forehead']['b'])
             
-        # Optional: if one is significantly better, just use it (fallback strategy)
-        best_roi = max(signals.keys(), key=lambda k: signals[k]['sqi'])
-        if signals[best_roi]['sqi'] > total_sqi * 0.7:  # If one ROI dominates quality
-            fused_signal = signals[best_roi]['sig']
-
-        # FFT BPM (identical to heartrate.py)
-        bpm = estimate_bpm_fft(fused_signal, self.fps)
-
-        # HRV analysis (additive)
-        hrv_result = {}
-        peaks = []
         try:
-            hrv_data = analyze_hrv(fused_signal, self.fps)
-            hrv_result = hrv_data['hrv']
-            # Pass sqi and artifact_percent into hrv_result so frontend can see it
-            hrv_result['sqi'] = hrv_data.get('sqi', 0.0)
-            hrv_result['artifact_percent'] = hrv_data.get('artifact_percent', 0.0)
-            peaks = hrv_data['peaks'].tolist()
-        except Exception as e:
-            print(f"HRV Error: {e}")
+            # POS Windowed (Most stable for real-time)
+            pos = compute_windowed_signal(r, g, b, fps, method="pos")
+            fused_signal = bandpass_filter(pos, fps)
+            
+            # FFT BPM (identical to heartrate.py)
+            bpm = estimate_bpm_fft(fused_signal, fps)
 
-        with self._lock:
-            self.current_bpm = bpm
-            self.current_hrv = hrv_result
-            self.current_waveform = fused_signal.tolist()
-            self.current_peaks = peaks
-            # Alternate status for visual realtime feedback
-            self.status = "Computing HRV" if int(time.time() * 2) % 2 == 0 else "Processing pulse"
+            # HRV analysis (additive)
+            hrv_result = {}
+            peaks = []
+            try:
+                hrv_data = analyze_hrv(fused_signal, fps)
+                hrv_result = hrv_data['hrv']
+                hrv_result['sqi'] = hrv_data.get('sqi', 0.0)
+                hrv_result['artifact_percent'] = hrv_data.get('artifact_percent', 0.0)
+                peaks = hrv_data['peaks'].tolist()
+            except Exception as e:
+                print(f"HRV Error: {e}")
+
+            with self._lock:
+                self.current_bpm = bpm
+                self.current_hrv = hrv_result
+                self.current_waveform = fused_signal.tolist()
+                self.current_peaks = peaks
+                self.status = "Monitoring..."
+
+        except Exception as e:
+            print(f"Processing Error: {e}")
+            with self._lock:
+                self.status = "Error processing signal"

@@ -36,8 +36,8 @@ from realtime_camera import RealtimeProcessor
 
 app = Flask(__name__)
 
-# Global processor instance
-processor = RealtimeProcessor(buffer_seconds=10, update_interval=0.1)
+# Global processor instance - Optimized for Render (0.5s update interval)
+processor = RealtimeProcessor(buffer_seconds=15, update_interval=0.5)
 
 # Session storage (in-memory)
 last_session_data = {}
