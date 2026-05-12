@@ -131,11 +131,12 @@ class RealtimeProcessor:
         self.is_running = True
         self._stop_event.clear()
         
-        # Check if source is a file
-        if isinstance(source, str) and not source.startswith("http"):
-            self.is_file_source = True
-        else:
-            self.is_file_source = False
+        # Ensure FPS is valid
+        if self.fps is None or self.fps <= 0 or np.isnan(self.fps):
+            print(f"DEBUG: Invalid FPS ({self.fps}) detected. Defaulting to 30.0")
+            self.fps = 30.0
+            
+        self.is_file_source = isinstance(source, str) and not source.startswith("http")
 
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
@@ -329,9 +330,13 @@ class RealtimeProcessor:
                 self.current_hrv = hrv_result
                 self.current_waveform = fused_signal.tolist()
                 self.current_peaks = peaks
-                self.status = "Monitoring..."
+                
+                # Signal Diagnostic Status
+                g_mean = np.mean(g)
+                g_std = np.std(g)
+                self.status = f"Live: {round(bpm, 1)} BPM | Signal G: μ={round(g_mean, 1)}, σ={round(g_std, 2)}"
 
         except Exception as e:
             print(f"Processing Error: {e}")
             with self._lock:
-                self.status = "Error processing signal"
+                self.status = f"Error: {str(e)[:20]}"
