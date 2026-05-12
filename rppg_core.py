@@ -25,12 +25,33 @@ except ImportError:
 _face_cascade = None
 
 def get_face_cascade():
-    """Lazy-load the Haar cascade (loaded once, reused)."""
+    """Lazy-load the Haar cascade with multiple path lookups for cloud environments."""
     global _face_cascade
     if _face_cascade is None:
-        _face_cascade = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        )
+        # Path 1: Default OpenCV data path
+        xml_name = 'haarcascade_frontalface_default.xml'
+        xml_path = cv2.data.haarcascades + xml_name
+        _face_cascade = cv2.CascadeClassifier(xml_path)
+        
+        if _face_cascade.empty():
+            print(f"DEBUG: Cascade empty at {xml_path}, trying alternates...")
+            import os
+            # Path 2: Common Linux locations
+            alternates = [
+                os.path.join('/usr/share/opencv4/haarcascades', xml_name),
+                os.path.join('/usr/local/share/opencv4/haarcascades', xml_name),
+                os.path.join(os.path.dirname(__file__), xml_name) # Local folder
+            ]
+            for path in alternates:
+                if os.path.exists(path):
+                    _face_cascade = cv2.CascadeClassifier(path)
+                    if not _face_cascade.empty():
+                        print(f"DEBUG: Found cascade at {path}")
+                        break
+        
+        if _face_cascade.empty():
+            print("ERROR: Could not load any face cascade detector!")
+            
     return _face_cascade
 
 

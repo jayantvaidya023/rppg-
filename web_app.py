@@ -25,6 +25,7 @@ from flask import (
     Flask, render_template, request, jsonify,
     Response, send_file,
 )
+from werkzeug.utils import secure_filename
 import numpy as np
 
 from rppg_core import process_video, bandpass_filter, compute_windowed_signal, estimate_bpm_fft
@@ -44,6 +45,9 @@ last_session_data = {}
 last_video_results = {}
 
 EXPORT_DIR = os.path.join(os.path.dirname(__file__), 'exports')
+UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), 'rppg_uploads')
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 
 # ---------------------------------------------------------------------------
@@ -180,19 +184,25 @@ def analyze_video():
             }), 400
     else:
         video_file = request.files['video']
-        filename = video_file.filename
-        ext = os.path.splitext(filename)[1] if filename else '.mp4'
-        if not ext: ext = '.mp4'
-        
-        video_path = os.path.join(
-            tempfile.gettempdir(),
-            f'rppg_upload_{int(time.time())}{ext}'
-        )
+        if video_file.filename == '':
+            return jsonify({'success': False, 'error': 'No video selected'})
+            
+        filename = secure_filename(video_file.filename)
+        video_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         video_file.save(video_path)
-
-    try:
+        
+        # Verify file is not empty
+        if os.path.getsize(video_path) < 100:
+             return jsonify({'success': False, 'error': 'Video file too small or corrupt'})
+             
+        print(f"DEBUG: Processing uploaded video: {filename} ({os.path.getsize(video_path)} bytes)")
+        
+        # Stop existing camera
+        processor.stop()
+        
+        # Start processing
         processor.start(video_path)
-        processor.start_recording() # record the session for exporting
+        processor.start_recording()
         
         # Start background thread to finalize when done
         def finalize():
@@ -221,9 +231,6 @@ def analyze_video():
                 }
         threading.Thread(target=finalize, daemon=True).start()
         
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 400
-
     return jsonify({'status': 'ok', 'message': 'Live analysis started'})
 
 
