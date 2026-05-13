@@ -172,10 +172,13 @@ async function startCamera() {
                 if (isRemote) {
                     startPushLoop();
                 }
-                togglePreview(true); // Switch to processed feed
+                // PRODUCTION: do not switch to backend MJPEG feed.
+                togglePreview(false);
+                // keep SSE/startSSE since it is lightweight JSON; MJPEG is the crashing endpoint.
                 startSSE();
             }
         });
+
 
         lastFpsTime = performance.now();
         framesCount = 0;
@@ -189,20 +192,15 @@ async function startCamera() {
 }
 
 function togglePreview(processed) {
-    if (processed) {
-        localVideo.style.display = 'none';
-        mjpegFeed.style.display = 'block';
-        mjpegFeed.src = '/api/video_feed?t=' + Date.now();
-        document.getElementById('faceOverlay').style.display = 'none';
-        console.log("DEBUG: Switched to Processed MJPEG Feed");
-    } else {
-        localVideo.style.display = 'block';
-        mjpegFeed.style.display = 'none';
-        mjpegFeed.src = '';
-        document.getElementById('faceOverlay').style.display = 'block';
-        console.log("DEBUG: Switched to Raw Video Feed");
-    }
+    // PRODUCTION: backend MJPEG feed disabled.
+    // Keep browser-local video preview always visible.
+    localVideo.style.display = 'block';
+    mjpegFeed.style.display = 'none';
+    mjpegFeed.src = '';
+    document.getElementById('faceOverlay').style.display = processed ? 'none' : 'block';
+    console.log("DEBUG: togglePreview (MJPEG disabled) => processed=" + processed);
 }
+
 
 function startPushLoop() {
     if (pushInterval) clearInterval(pushInterval);
@@ -448,9 +446,11 @@ function handleAnalysisResult(data) {
         document.getElementById('cameraPreviewCard').style.display = 'block';
         
         // --- FIX: Switch to processed MJPEG feed for video files too ---
-        togglePreview(true);
+        // PRODUCTION: backend MJPEG disabled, keep local preview.
+        togglePreview(false);
         
         // Cleanup UI
+
         document.getElementById('uploadProgressContainer').style.display = 'none';
         document.getElementById('uploadProgressBar').style.width = '0%';
         

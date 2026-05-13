@@ -558,15 +558,15 @@ def stream():
         }
     )
 
+# NOTE (PRODUCTION HARDENING FOR DEPLOY):
+# Disable backend MJPEG frame streaming (/api/video_feed) to prevent
+# Gunicorn/Render worker timeouts and memory blow-ups.
+# Mobile/web workflow uses browser-local <video> preview only.
+
 @app.route('/api/video_feed')
 def video_feed():
-    """Live MJPEG camera feed."""
-    if not processor.is_running:
-        return Response(status=204)
-    return Response(
-        processor.generate_frames(),
-        mimetype='multipart/x-mixed-replace; boundary=frame'
-    )
+    return jsonify({'status': 'error', 'message': 'video_feed disabled in production'}), 410
+
 
 
 # ---------------------------------------------------------------------------
