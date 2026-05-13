@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+exports/
+chunks/
+uploads/
+temp/
+*.mp4
+*.webm
+*.avi
+*.mov
+*.xlsx
+*.csv
+*.json
+.venv/
+env/

@@ -66,6 +66,45 @@ class CameraSource:
         return self.cap is not None and self.cap.isOpened()
 
 
+class PushCameraSource:
+    """
+    Camera source where frames are pushed externally (e.g. from a web request).
+    Used for deployed environments where the server cannot access the local webcam.
+    """
+
+    def __init__(self, fps=30.0):
+        self.fps = fps
+        self.current_frame = None
+        self._lock = threading.Lock()
+        self.is_running = False
+
+    def open(self):
+        self.is_running = True
+        return self
+
+    def push(self, frame):
+        with self._lock:
+            self.current_frame = frame
+
+    def read(self):
+        if not self.is_running:
+            return False, None
+        with self._lock:
+            if self.current_frame is None:
+                return False, None
+            return True, self.current_frame.copy()
+
+    def get_fps(self):
+        return self.fps
+
+    def release(self):
+        self.is_running = False
+        self.current_frame = None
+
+    def is_opened(self):
+        return self.is_running
+
+
 class RealtimeProcessor:
     """
     Real-time rPPG processor using a rolling buffer.
@@ -121,9 +160,15 @@ class RealtimeProcessor:
         """Start processing from a camera source."""
         if self.is_running:
             self.stop()
-
-        self.status = "Initializing camera..."
-        self._camera = CameraSource(source)
+        
+        # Determine source type
+        if source == 'push':
+            self.status = "Waiting for browser frames..."
+            self._camera = PushCameraSource(fps=30.0)
+        else:
+            self.status = "Initializing camera..."
+            self._camera = CameraSource(source)
+        
         self._camera.open()
         self.fps = self._camera.get_fps()
         self.face_cascade = get_face_cascade()
@@ -136,7 +181,7 @@ class RealtimeProcessor:
             print(f"DEBUG: Invalid FPS ({self.fps}) detected. Defaulting to 30.0")
             self.fps = 30.0
             
-        self.is_file_source = isinstance(source, str) and not source.startswith("http")
+        self.is_file_source = isinstance(source, str) and not source.startswith("http") and source != 'push'
 
         # Dynamically initialize buffers based on FPS
         max_buf = int(self.buffer_seconds * self.fps)

@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="rPPG Data Collection — Structured Physiological Research Platform">
+    <title>rPPG Data Collection | Pranayama Research</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+    <style>
+        .stepper {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            padding: 0 20px;
+        }
+        .step {
+            flex: 1;
+            text-align: center;
+            position: relative;
+            font-size: 0.85rem;
+            color: rgba(255,255,255,0.4);
+            font-weight: 500;
+        }
+        .step.active {
+            color: var(--accent-blue);
+        }
+        .step.completed {
+            color: #4cd137;
+        }
+        .step::after {
+            content: '';
+            position: absolute;
+            top: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+        }
+
+        .phase-container {
+            display: none;
+            animation: fadeIn 0.4s ease-out;
+        }
+        .phase-container.active {
+            display: block;
+        }
+
+        .instruction-box {
+            background: rgba(255,255,255,0.05);
+            border-left: 4px solid var(--accent-blue);
+            padding: 20px;
+            border-radius: 0 8px 8px 0;
+            margin-bottom: 25px;
+        }
+        .instruction-box h3 {
+            margin-bottom: 10px;
+            font-size: 1.1rem;
+            color: var(--accent-blue);
+        }
+        .instruction-box ul {
+            padding-left: 20px;
+            color: rgba(255,255,255,0.8);
+        }
+        .instruction-box li {
+            margin-bottom: 5px;
+        }
+
+        .collection-timer {
+            font-size: 3rem;
+            font-weight: 800;
+            text-align: center;
+            margin: 20px 0;
+            font-variant-numeric: tabular-nums;
+            color: #fff;
+        }
+
+        .progress-ring {
+            width: 100%;
+            height: 6px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background: var(--accent-blue);
+            width: 0%;
+            transition: width 1s linear;
+        }
+
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        .comparison-table th, .comparison-table td {
+            padding: 12px;
+            text-align: center;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .comparison-table th {
+            color: var(--accent-blue);
+            font-weight: 600;
+        }
+        .comparison-table .phase-name {
+            font-weight: 700;
+            text-align: left;
+        }
+
+        .metric-trend {
+            font-size: 0.8rem;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-left: 5px;
+        }
+        .trend-up { color: #ff7675; }
+        .trend-down { color: #55efc4; }
+
+        .btn-large {
+            padding: 15px 30px;
+            font-size: 1.1rem;
+            width: 100%;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* ROI Overlay Styles */
+        .roi-guide {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.6;
+        }
+        .roi-circle {
+            width: 200px;
+            height: 250px;
+            border: 2px dashed rgba(255,255,255,0.5);
+            border-radius: 50% 50% 40% 40%;
+            box-shadow: 0 0 0 2000px rgba(0,0,0,0.4);
+        }
+        .roi-label {
+            position: absolute;
+            bottom: 20%;
+            color: #fff;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            background: rgba(0,0,0,0.5);
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        .sync-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.8rem;
+            color: rgba(255,255,255,0.6);
+            margin-top: 10px;
+        }
+        .sync-dot {
+            width: 8px;
+            height: 8px;
+            background: #ffa502;
+            border-radius: 50%;
+            animation: pulse-glow-badge 1s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <div class="logo-pulse"></div>
+                <h1>rPPG Research Platform</h1>
+            </div>
+            <div class="header-right">
+                <span class="status-badge" id="statusBadge" style="background: var(--accent-blue);">Research Mode</span>
+            </div>
+        </header>
+
+        <main class="grid" style="max-width: 800px; margin: 0 auto;">
+            
+            <!-- Stepper -->
+            <section class="card" style="grid-column: 1 / -1;">
+                <div class="stepper">
+                    <div class="step active" id="step-info">SUBJECT</div>
+                    <div class="step" id="step-pre">PRE</div>
+                    <div class="step" id="step-during">DURING</div>
+                    <div class="step" id="step-post">POST</div>
+                    <div class="step" id="step-summary">SUMMARY</div>
+                </div>
+            </section>
+
+            <!-- 1. Subject Info Phase -->
+            <section id="phase-info" class="card phase-container active" style="grid-column: 1 / -1;">
+                <div class="card-label">Step 1: Subject Registration</div>
+                <div class="instruction-box">
+                    <h3>Mobile Recording Tips</h3>
+                    <ul>
+                        <li>Place phone on a <b>stable surface</b> (no handheld).</li>
+                        <li>Sit in a <b>well-lit</b> area (avoid backlighting).</li>
+                        <li>Keep your face <b>centered</b> in the guide.</li>
+                        <li>Ensure <b>airplane mode</b> or "Do Not Disturb" is on.</li>
+                    </ul>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
+                    <div class="control-group">
+                        <label class="control-label">Subject Name</label>
+                        <input type="text" id="subjectName" class="text-input" placeholder="e.g. Participant_01">
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Experiment ID</label>
+                        <input type="text" id="experimentId" class="text-input" placeholder="e.g. EXP_2024_01">
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Age</label>
+                        <input type="number" id="subjectAge" class="text-input" placeholder="30">
+                    </div>
+                    <div class="control-group">
+                        <label class="control-label">Gender</label>
+                        <select id="subjectGender" class="select-input">
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="control-group">
+                    <label class="control-label">Notes / Observations</label>
+                    <textarea id="subjectNotes" class="text-input" style="height: 80px; resize: none;" placeholder="Any specific conditions..."></textarea>
+                </div>
+                <div style="display:flex; gap:12px; margin-top:14px;">
+                    <button class="btn btn-start btn-large" style="flex:1" onclick="startExperiment()">Initialize Experiment</button>
+                    <button class="btn btn-large" style="flex:1; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);" id="btnResumeExperiment" onclick="resumeExperiment()" disabled>Resume Experiment</button>
+                </div>
+            </section>
+
+
+            <!-- 2. Recording Phase (Reused for PRE, DURING, POST) -->
+            <section id="phase-record" class="card phase-container" style="grid-column: 1 / -1;">
+                <div class="card-label" id="currentPhaseLabel">Phase: PRE-Session</div>
+                
+                <div class="instruction-box" id="phaseInstructions">
+                    <h3>Instructions</h3>
+                    <ul id="instructionList">
+                        <li>Sit straight and relax.</li>
+                        <li>Keep eyes closed.</li>
+                        <li>Avoid any facial movement.</li>
+                    </ul>
+                </div>
+
+                <div class="video-container" style="position: relative; background: #000; border-radius: 8px; overflow: hidden; margin-bottom: 20px; max-height: 400px; display: flex; align-items: center; justify-content: center;">
+                    <video id="recordVideo" autoplay muted playsinline style="max-width: 100%; transform: scaleX(-1);"></video>
+                    <div id="recordingIndicator" style="display:none; position: absolute; top: 20px; right: 20px; width: 12px; height: 12px; background: #ff4757; border-radius: 50%; animation: pulse-glow-badge 1s infinite; z-index: 10;"></div>
+                    
+                    <div class="roi-guide" id="roiGuide">
+                        <div class="roi-circle"></div>
+                        <div class="roi-label">Position Face Here</div>
+                    </div>
+                </div>
+
+                <div class="collection-timer" id="timerDisplay">05:00</div>
+                <div class="progress-ring">
+                    <div class="progress-bar-fill" id="progressBarFill"></div>
+                </div>
+
+                <div id="syncStatus" class="sync-indicator" style="display:none;">
+                    <div class="sync-dot"></div>
+                    <span id="syncText">Syncing data chunks...</span>
+                </div>
+
+                <div id="recordControls">
+                    <button class="btn btn-record btn-large" id="btnAction" onclick="handlePhaseAction()">Start Recording (PRE)</button>
+                </div>
+
+                <div id="processingStatus" style="display:none; margin-top: 20px; text-align: center;">
+                    <div class="logo-pulse" style="margin: 0 auto 15px;"></div>
+                    <p style="color: var(--accent-blue); font-weight: 600;">Processing Physiological Data...</p>
+                    <p style="font-size: 0.8rem; color: rgba(255,255,255,0.5);">Extracting HRV metrics from recorded pulse.</p>
+                </div>
+            </section>
+
+            <!-- 3. Comparison / Summary Phase (The Dashboard) -->
+            <section id="phase-summary" class="card phase-container" style="grid-column: 1 / -1; max-width: 1000px;">
+                <div class="card-label">Physiological Analysis Dashboard</div>
+                
+                <!-- Metric Cards -->
+                <div class="comparison-grid" id="metricCardsGrid">
+                    <!-- PRE Column -->
+                    <div class="dashboard-metric-card" style="border-top: 3px solid #45aaf2;">
+                        <span class="dashboard-metric-label">PRE BPM</span>
+                        <span class="dashboard-metric-value" id="val-pre-bpm">--</span>
+                        <span class="dashboard-metric-label" style="margin-top:10px;">PRE RMSSD</span>
+                        <span class="dashboard-metric-value" id="val-pre-rmssd" style="font-size: 1.2rem;">-- ms</span>
+                    </div>
+                    <!-- DURING Column -->
+                    <div class="dashboard-metric-card" style="border-top: 3px solid #a55eea;">
+                        <span class="dashboard-metric-label">DURING BPM</span>
+                        <span class="dashboard-metric-value" id="val-during-bpm">--</span>
+                        <span class="dashboard-metric-label" style="margin-top:10px;">DURING RMSSD</span>
+                        <span class="dashboard-metric-value" id="val-during-rmssd" style="font-size: 1.2rem;">-- ms</span>
+                    </div>
+                    <!-- POST Column -->
+                    <div class="dashboard-metric-card" style="border-top: 3px solid #20bf6b;">
+                        <span class="dashboard-metric-label">POST BPM</span>
+                        <span class="dashboard-metric-value" id="val-post-bpm">--</span>
+                        <span class="dashboard-metric-label" style="margin-top:10px;">POST RMSSD</span>
+                        <span class="dashboard-metric-value" id="val-post-rmssd" style="font-size: 1.2rem;">-- ms</span>
+                    </div>
+                </div>
+
+                <!-- Main Comparison Charts -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px;">
+                    <div class="card" style="background: rgba(255,255,255,0.02); padding: 15px;">
+                        <div class="card-label" style="font-size: 0.7rem;">Heart Rate Comparison (BPM)</div>
+                        <canvas id="bpmComparisonChart" height="200"></canvas>
+                    </div>
+                    <div class="card" style="background: rgba(255,255,255,0.02); padding: 15px;">
+                        <div class="card-label" style="font-size: 0.7rem;">HRV Stability (RMSSD)</div>
+                        <canvas id="hrvComparisonChart" height="200"></canvas>
+                    </div>
+                </div>
+
+                <!-- Detailed Metrics Table -->
+                <div class="card" style="background: rgba(255,255,255,0.02); padding: 0; overflow: hidden; margin-bottom: 30px;">
+                    <table class="comparison-table">
+                        <thead>
+                            <tr>
+                                <th>Metric</th>
+                                <th style="color: #45aaf2;">PRE</th>
+                                <th style="color: #a55eea;">DURING</th>
+                                <th style="color: #20bf6b;">POST</th>
+                            </tr>
+                        </thead>
+                        <tbody id="comparisonTableBody">
+                            <!-- Populated by JS -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Detailed Phase Analysis -->
+                <div style="margin-top: 40px;">
+                    <div class="card-label">Detailed Waveform & RR-Interval Analysis</div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 20px;">
+                        <button class="btn btn-tab active" id="tab-PRE" onclick="switchSummaryTab('PRE')">PRE-Session</button>
+                        <button class="btn btn-tab" id="tab-DURING" onclick="switchSummaryTab('DURING')">DURING-Session</button>
+                        <button class="btn btn-tab" id="tab-POST" onclick="switchSummaryTab('POST')">POST-Session</button>
+                    </div>
+
+                    <div id="tab-content-container" class="fade-in">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                            <div class="card" style="background: rgba(255,255,255,0.02); padding: 15px;">
+                                <div class="card-label" style="font-size: 0.7rem;" id="tabChartLabel1">Filtered Waveform</div>
+                                <canvas id="tabWaveformCanvas" height="200"></canvas>
+                            </div>
+                            <div class="card" style="background: rgba(255,255,255,0.02); padding: 15px;">
+                                <div class="card-label" style="font-size: 0.7rem;" id="tabChartLabel2">RR-Intervals (ms)</div>
+                                <canvas id="tabRRCanvas" height="200"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Global Controls -->
+                <div style="margin-top: 30px; display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <button class="btn btn-export btn-large" onclick="downloadAllReports()">Download Full Package (ZIP)</button>
+                    <button class="btn btn-large" style="background: rgba(255,255,255,0.1);" onclick="window.location.reload()">New Experiment</button>
+                </div>
+            </section>
+
+        </main>
+
+        <footer class="status-bar">
+            <span id="statusMessage">Waiting for subject registration...</span>
+        </footer>
+    </div>
+
+    <!-- Processing Overlay -->
+    <div id="processingOverlay" class="processing-overlay">
+        <div class="spinner"></div>
+        <h2 style="color: white; margin-bottom: 10px;" id="processingTitle">Processing Session</h2>
+        <p style="color: var(--text-secondary);" id="processingSubtitle">Finalizing and syncing data chunks...</p>
+        <div style="width: 200px; height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px; margin-top: 20px; overflow: hidden;">
+            <div id="processingBar" style="width: 0%; height: 100%; background: var(--accent-blue); transition: width 0.3s;"></div>
+        </div>
+    </div>
+
+    <!-- External dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="/static/data_collection.js"></script>
+</body>
+</html>

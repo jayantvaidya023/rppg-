@@ -13,6 +13,8 @@ let mediaRecorder = null;
 let recordedChunks = [];
 let recordStartTime = 0;
 let timerInterval = null;
+let pushInterval = null;
+let isRemote = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
 
 // Quality tracking state
 let qualityCheckInterval = null;
@@ -57,6 +59,11 @@ sourceSelect.addEventListener('change', function() {
     if ((val === 'file' || val === 'default') && localStream) {
         stopCamera();
     }
+});
+
+document.getElementById('btnTestSSE').addEventListener('click', () => {
+    console.log("DEBUG: [UI] Test Stream requested");
+    startSSE(true);
 });
 
 // ---- Quality Checks (Light & FPS) ----
@@ -152,12 +159,19 @@ async function startCamera() {
         setStatus('Camera started. Position your face. Analysis will start automatically.');
         
         // --- FIX: Start analysis backend and SSE immediately ---
+        // Use 'push' source for remote deployment to enable browser->server frame transfer
+        const sourcePayload = isRemote ? { source: 'push' } : { source: 0 };
+        console.log(`DEBUG: [Camera] Starting backend with source: ${sourcePayload.source}`);
+        
         fetch('/api/start-camera', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ source: 0 }) // default webcam
+            body: JSON.stringify(sourcePayload)
         }).then(r => r.json()).then(data => {
             if (data.status === 'ok') {
+                if (isRemote) {
+                    startPushLoop();
+                }
                 togglePreview(true); // Switch to processed feed
                 startSSE();
             }
@@ -190,7 +204,38 @@ function togglePreview(processed) {
     }
 }
 
+function startPushLoop() {
+    if (pushInterval) clearInterval(pushInterval);
+    console.log("DEBUG: [Camera] Starting Frame Push Loop (Remote Mode)");
+    
+    const video = document.getElementById('localVideo');
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Low resolution for faster transfer
+    canvas.width = 320; 
+    canvas.height = 240;
+    
+    pushInterval = setInterval(() => {
+        if (!localStream || video.paused || video.ended) return;
+        
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const frame = canvas.toDataURL('image/jpeg', 0.6); // 60% quality
+        
+        fetch('/api/push-frame', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ frame: frame })
+        }).catch(e => console.warn("DEBUG: [Camera] Push failed", e));
+        
+    }, 100); // 10 fps
+}
+
 function stopCamera() {
+    if (pushInterval) {
+        clearInterval(pushInterval);
+        pushInterval = null;
+    }
     if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
         localStream = null;
@@ -420,25 +465,29 @@ function handleAnalysisResult(data) {
 }
 
 // ---- SSE Stream ----
-function startSSE() {
+function startSSE(isTest = false) {
     if (eventSource) eventSource.close();
     
-    console.log("DEBUG: [SSE] Initializing connection to /api/stream...");
-    eventSource = new EventSource('/api/stream');
+    const url = isTest ? '/api/test-stream' : '/api/stream';
+    console.log(`DEBUG: [SSE] Initializing connection to ${url}...`);
+    
+    eventSource = new EventSource(url);
     let startTime = Date.now();
     hrTimeData = { times: [], values: [] };
     analysisActive = true;
     
     eventSource.onopen = () => {
-        console.log("DEBUG: [SSE] Connection established ✅");
-        statusBadge.textContent = 'Stream Connected';
+        console.log(`DEBUG: [SSE] Connection established to ${url} ✅`);
+        statusBadge.textContent = isTest ? 'Test Stream Connected' : 'Stream Connected';
+        statusBadge.className = 'status-badge active';
     };
 
     eventSource.onerror = (err) => {
-        console.warn("DEBUG: [SSE] Connection error/timeout ⚠️. Attempting reconnect in 3s...");
+        console.warn(`DEBUG: [SSE] Connection error/timeout on ${url} ⚠️. Attempting reconnect in 3s...`);
         eventSource.close();
         statusBadge.textContent = 'Reconnecting...';
-        setTimeout(startSSE, 3000);
+        statusBadge.className = 'status-badge';
+        setTimeout(() => startSSE(isTest), 3000);
     };
 
     eventSource.onmessage = function(e) {
@@ -446,17 +495,18 @@ function startSSE() {
             const data = JSON.parse(e.data);
             
             if (data.heartbeat) {
-                console.log("DEBUG: [SSE] Heartbeat received 💓");
-                if (!analysisActive) statusMessage.textContent = "System ready. Analysis waiting...";
+                console.log("DEBUG: [SSE] Heartbeat received 💓", data.status);
+                if (data.status) statusMessage.textContent = `Status: ${data.status}`;
                 return;
             }
 
-            if (debugMode) console.log("DEBUG: [SSE] Payload received:", data);
+            console.log(`DEBUG: [SSE] [Packet #${data.packet_id || 'N/A'}] Payload received:`, data);
             
             if (data.status) {
                 statusMessage.textContent = `Status: ${data.status}`;
                 if (data.status === "Analysis complete" || data.status === "Idle" || data.status === "Waiting for data...") {
                     statusBadge.textContent = data.status;
+                    statusBadge.className = 'status-badge';
                 } else {
                     statusBadge.textContent = 'Analyzing...';
                     statusBadge.className = 'status-badge active';
@@ -465,7 +515,7 @@ function startSSE() {
 
             // Update BPM
             if (data.bpm > 0) {
-                console.log("DEBUG: [UI] Updating BPM:", data.bpm);
+                console.log(`DEBUG: [UI] Updating Charts with BPM: ${data.bpm}`);
                 updateBPM(data.bpm);
                 
                 let elapsedSec = (Date.now() - startTime) / 1000;
@@ -482,6 +532,7 @@ function startSSE() {
             
             // ... [Rest of update logic for HRV, SQI, etc.] ...
             if (data.hrv && (data.hrv.mean_rr > 0 || data.hrv.sdnn > 0)) {
+                console.log("DEBUG: [UI] Updating HRV metrics", data.hrv);
                 updateHRV(data.hrv, data.hrv.peak_bpm || 0);
             }
 
@@ -504,6 +555,7 @@ function startSSE() {
 
         } catch(err) {
             console.error("DEBUG: [SSE] Parse Error", err);
+            console.log("DEBUG: [SSE] Raw payload that failed:", e.data);
         }
     };
 }
@@ -514,6 +566,11 @@ function stopSSE() {
 
 // ---- UI Updates ----
 function updateBPM(bpm) {
+    if (isNaN(bpm) || bpm === null) {
+        console.warn("DEBUG: [UI] Received invalid BPM (NaN/null)");
+        return;
+    }
+    console.log(`DEBUG: [UI] Updating BPM Display: ${bpm}`);
     bpmValue.textContent = Math.round(bpm);
     bpmValue.className = 'bpm-value';
     if (bpm > 100) bpmValue.classList.add('elevated');
@@ -539,6 +596,9 @@ function setStatus(msg) {
 
 // ---- Canvas Drawing ----
 function drawWaveform(canvas, data, color) {
+    if (data.length > 0 && data.length % 50 === 0) {
+        console.log(`DEBUG: [UI] Drawing Waveform (${data.length} points)`);
+    }
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth;
@@ -577,6 +637,9 @@ function drawWaveform(canvas, data, color) {
 }
 
 function drawHRTime(canvas, times, values) {
+    if (values.length > 0) {
+        console.log(`DEBUG: [UI] Drawing HR Graph (${values.length} points, last: ${values[values.length-1].toFixed(1)})`);
+    }
     const ctx = canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth;
@@ -635,9 +698,23 @@ function drawHRTime(canvas, times, values) {
 function exportReport(format) {
     const info = getSubjectInfo();
     const params = new URLSearchParams(info).toString();
-    setStatus(`Exporting ${format.toUpperCase()} report...`);
-    window.location.href = `/api/export/${format}?${params}`;
-    setTimeout(() => setStatus('Export download started.'), 1000);
+    const url = `/api/export/${format}?${params}`;
+    
+    console.log(`DEBUG: [Export] Requesting ${format.toUpperCase()} report: ${url}`);
+    setStatus(`Generating ${format.toUpperCase()} report...`);
+    
+    // Robust download trigger using hidden anchor
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = ''; // Let server decide filename via Content-Disposition
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    
+    setTimeout(() => {
+        setStatus('Export request sent. Check your downloads.');
+        console.log("DEBUG: [Export] Download trigger fired");
+    }, 1500);
 }
 
 // Init: trigger source select

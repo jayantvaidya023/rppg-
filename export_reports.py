@@ -88,9 +88,9 @@ def export_rr_report(rr_ms, rr_clean=None, rr_mask=None, filepath='', format='cs
     }
     if rr_clean is not None and len(rr_clean) == n:
         data['rr_clean_ms'] = rr_clean
-        
+
     if rr_mask is not None and len(rr_mask) == n:
-        data['artifact_interpolated'] = ~rr_mask
+        data['artifact_interpolated'] = ~np.asarray(rr_mask)
 
     df = pd.DataFrame(data)
     _save_df(df, filepath, format)
@@ -101,7 +101,7 @@ def export_rr_report(rr_ms, rr_clean=None, rr_mask=None, filepath='', format='cs
 # HRV summary report
 # ---------------------------------------------------------------------------
 
-def export_hrv_report(hrv_metrics, session_info=None, filepath='',
+def export_hrv_report(hrv_metrics, hrv_session_info=None, filepath='',
                       format='csv'):
     """
     Export HRV summary metrics.
@@ -109,26 +109,19 @@ def export_hrv_report(hrv_metrics, session_info=None, filepath='',
     Columns: metric, value, unit, description
     """
     rows = [
-        ('mean_rr', hrv_metrics.get('mean_rr', 0), 'ms',
-         'Mean RR interval'),
-        ('sdnn', hrv_metrics.get('sdnn', 0), 'ms',
-         'Standard deviation of NN intervals'),
-        ('rmssd', hrv_metrics.get('rmssd', 0), 'ms',
-         'Root mean square of successive differences'),
-        ('pnn50', hrv_metrics.get('pnn50', 0), '%',
-         'Percentage of successive differences > 50ms'),
-        ('mean_hr', hrv_metrics.get('mean_hr', 0), 'BPM',
-         'Mean heart rate from RR intervals'),
-        ('min_hr', hrv_metrics.get('min_hr', 0), 'BPM',
-         'Minimum instantaneous heart rate'),
-        ('max_hr', hrv_metrics.get('max_hr', 0), 'BPM',
-         'Maximum instantaneous heart rate'),
-        ('nn_count', hrv_metrics.get('nn_count', 0), 'count',
-         'Number of NN intervals analyzed'),
+        ('mean_rr',  hrv_metrics.get('mean_rr', 0),  'ms',    'Mean RR interval'),
+        ('sdnn',     hrv_metrics.get('sdnn', 0),      'ms',    'Standard deviation of NN intervals'),
+        ('rmssd',    hrv_metrics.get('rmssd', 0),     'ms',    'Root mean square of successive differences'),
+        ('pnn50',    hrv_metrics.get('pnn50', 0),     '%',     'Percentage of successive differences > 50ms'),
+        ('mean_hr',  hrv_metrics.get('mean_hr', 0),   'BPM',   'Mean heart rate from RR intervals'),
+        ('min_hr',   hrv_metrics.get('min_hr', 0),    'BPM',   'Minimum instantaneous heart rate'),
+        ('max_hr',   hrv_metrics.get('max_hr', 0),    'BPM',   'Maximum instantaneous heart rate'),
+        ('nn_count', hrv_metrics.get('nn_count', 0),  'count', 'Number of NN intervals analyzed'),
     ]
 
-    if session_info:
-        for k, v in session_info.items():
+    # ── FIX: parameter renamed to hrv_session_info to avoid shadowing ──
+    if hrv_session_info:
+        for k, v in hrv_session_info.items():
             rows.append((k, v, '', 'Session metadata'))
 
     df = pd.DataFrame(rows, columns=['metric', 'value', 'unit', 'description'])
@@ -140,102 +133,119 @@ def export_hrv_report(hrv_metrics, session_info=None, filepath='',
 # Full session export
 # ---------------------------------------------------------------------------
 
-def export_full_session(session_data, output_dir, formats=None):
+def export_full_session(session_data, output_dir, formats=None, session_info=None):
     """
     Export all reports for a session.
 
     Parameters:
-        session_data: dict with keys:
-            r, g, b, fps, pos_signal, filtered_signal,
-            bpm, rr_ms, rr_mask, hrv, time_points, hr_values
-        output_dir: directory to write reports to
-        formats: list of formats ['csv', 'json', 'xlsx']
+        session_data : dict with keys:
+                       r, g, b, fps, pos_signal, filtered_signal,
+                       bpm, rr_ms, rr_mask, hrv, time_points, hr_values
+        output_dir   : root directory to write reports into
+        formats      : list of formats, e.g. ['csv', 'json', 'xlsx']
+        session_info : optional dict; if it contains 'custom_dir' the reports
+                       are written there directly instead of a timestamped
+                       sub-folder (used by the data-collection workflow).
 
     Returns:
-        dict mapping report_name → list of file paths
+        dict mapping report_name -> list of file paths
     """
     if formats is None:
         formats = ['csv', 'json', 'xlsx']
 
-    timestamp = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    
+    timestamp    = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     subject_info = session_data.get('subject_info', {})
-    name = subject_info.get('name', '').strip()
-    if not name:
-        name = 'Unknown'
-        
-    session_dir = os.path.join(output_dir, f"{name}_{timestamp}")
+    name         = subject_info.get('name', '').strip() or 'Unknown'
+
+    # ── FIX: decide session_dir ONCE, never overwrite session_info ──────
+    if session_info and 'custom_dir' in session_info:
+        session_dir = session_info['custom_dir']
+    else:
+        session_dir = os.path.join(output_dir, f"{name}_{timestamp}")
+
     os.makedirs(session_dir, exist_ok=True)
-    
+
     results = {}
 
-    r = np.asarray(session_data.get('r', []))
-    g = np.asarray(session_data.get('g', []))
-    b = np.asarray(session_data.get('b', []))
-    fps = session_data.get('fps', 30)
+    r   = np.asarray(session_data.get('r', []))
+    g   = np.asarray(session_data.get('g', []))
+    b   = np.asarray(session_data.get('b', []))
+    fps = session_data.get('fps', 30) or 30
 
     for fmt in formats:
         ext = 'xlsx' if fmt == 'xlsx' else fmt
 
-        # RGB report
+        # ── RGB report ───────────────────────────────────────────────────
         if len(r) > 0:
             path = os.path.join(session_dir, f'rgb_report_{timestamp}.{ext}')
             export_rgb_report(r, g, b, fps, path, fmt)
             results.setdefault('rgb', []).append(path)
 
-        # Filtered signal
-        pos = session_data.get('pos_signal')
+        # ── Filtered signal ──────────────────────────────────────────────
+        pos  = session_data.get('pos_signal')
         filt = session_data.get('filtered_signal')
         if filt is not None and len(filt) > 0:
-            path = os.path.join(session_dir, f'signal_report_{timestamp}.{ext}')
+            path    = os.path.join(session_dir, f'signal_report_{timestamp}.{ext}')
             pos_arr = pos if pos is not None else filt
             export_filtered_signal_report(pos_arr, filt, fps, path, fmt)
             results.setdefault('signal', []).append(path)
 
-        # RR intervals
-        rr = session_data.get('rr_ms')
+        # ── RR intervals ─────────────────────────────────────────────────
+        rr       = session_data.get('rr_ms')
         rr_clean = session_data.get('rr_clean')
         if rr is not None and len(rr) > 0:
-            path = os.path.join(session_dir, f'rr_report_{timestamp}.{ext}')
+            path    = os.path.join(session_dir, f'rr_report_{timestamp}.{ext}')
             rr_mask = session_data.get('rr_mask')
             export_rr_report(rr, rr_clean, rr_mask, path, fmt)
             results.setdefault('rr', []).append(path)
 
-        # HRV summary
+        # ── HRV summary ──────────────────────────────────────────────────
         hrv = session_data.get('hrv')
         if hrv:
             path = os.path.join(session_dir, f'hrv_report_{timestamp}.{ext}')
-            session_info = {
-                'bpm_fft': session_data.get('bpm', 0),
-                'duration_frames': len(r),
-                'duration_seconds': round(len(r) / fps, 2) if fps > 0 else 0,
-                'fps': fps,
-                'timestamp': timestamp,
-                'sqi_score': hrv.get('sqi', 0.0),
-                'artifact_percent': hrv.get('artifact_percent', 0.0)
-            }
-            # Include subject info in HRV report summary
-            for k, v in subject_info.items():
-                if v:
-                    session_info[f'subject_{k}'] = v
 
-            export_hrv_report(hrv, session_info, path, fmt)
+            # ── FIX: use a NEW local variable, never reuse 'session_info' ──
+            hrv_meta = {
+                'bpm_fft':          session_data.get('bpm', 0),
+                'duration_frames':  int(len(r)),
+                'duration_seconds': round(len(r) / fps, 2) if fps > 0 else 0,
+                'fps':              fps,
+                'timestamp':        timestamp,
+                'sqi_score':        hrv.get('sqi', 0.0),
+                'artifact_percent': hrv.get('artifact_percent', 0.0),
+            }
+            for k, val in subject_info.items():
+                if val:
+                    hrv_meta[f'subject_{k}'] = val
+
+            # ── FIX: pass hrv_meta, not session_info ──
+            export_hrv_report(hrv, hrv_meta, path, fmt)
             results.setdefault('hrv', []).append(path)
 
-    # Save metadata.json
+    # ── metadata.json ────────────────────────────────────────────────────
     metadata_path = os.path.join(session_dir, 'metadata.json')
     metadata = {
-        'subject_info': subject_info,
+        'subject_info':     subject_info,
         'session_timestamp': timestamp,
-        'fps': fps,
-        'total_frames': len(r),
+        'fps':              fps,
+        'total_frames':     int(len(r)),
         'duration_seconds': round(len(r) / fps, 2) if fps > 0 else 0,
-        'bpm_fft': session_data.get('bpm', 0),
-        'hrv_summary': session_data.get('hrv', {})
+        'bpm_fft':          session_data.get('bpm', 0),
+        'hrv_summary':      session_data.get('hrv', {}),
     }
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2, default=str)
     results.setdefault('metadata', []).append(metadata_path)
+
+    # ── hrv_report.json (flat) — used by task-status polling ─────────────
+    hrv_json_path = os.path.join(session_dir, 'hrv_report.json')
+    if session_data.get('hrv') and not os.path.exists(hrv_json_path):
+        hrv_payload = dict(session_data['hrv'])
+        hrv_payload['bpm']       = float(session_data.get('bpm', 0))
+        hrv_payload['timestamp'] = timestamp
+        with open(hrv_json_path, 'w') as f:
+            json.dump(hrv_payload, f, indent=2, default=str)
+        results.setdefault('hrv_json', []).append(hrv_json_path)
 
     return results
 
@@ -245,23 +255,33 @@ def export_full_session(session_data, output_dir, formats=None):
 # ---------------------------------------------------------------------------
 
 def _save_df(df, filepath, format):
-    """Save a DataFrame in the specified format."""
-    os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
+    """Save a DataFrame in the specified format with error handling."""
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
 
-    if format == 'csv':
-        df.to_csv(filepath, index=False)
-    elif format == 'json':
-        # JSON-serializable: convert numpy types
-        records = df.to_dict(orient='records')
-        for rec in records:
-            for k, v in rec.items():
-                if isinstance(v, (np.integer,)):
-                    rec[k] = int(v)
-                elif isinstance(v, (np.floating,)):
-                    rec[k] = float(v)
-                elif isinstance(v, (np.bool_,)):
-                    rec[k] = bool(v)
-        with open(filepath, 'w') as f:
-            json.dump(records, f, indent=2, default=str)
-    elif format == 'xlsx':
-        df.to_excel(filepath, index=False, engine='openpyxl')
+        if format == 'csv':
+            df.to_csv(filepath, index=False)
+
+        elif format == 'json':
+            records = df.to_dict(orient='records')
+            for rec in records:
+                for k, v in rec.items():
+                    if isinstance(v, (np.integer,)):
+                        rec[k] = int(v)
+                    elif isinstance(v, (np.floating,)):
+                        rec[k] = float(v)
+                    elif isinstance(v, (np.bool_,)):
+                        rec[k] = bool(v)
+                    elif isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
+                        rec[k] = None
+            with open(filepath, 'w') as f:
+                json.dump(records, f, indent=2, default=str)
+
+        elif format == 'xlsx':
+            df.to_excel(filepath, index=False, engine='openpyxl')
+
+        return True
+
+    except Exception as e:
+        print(f"[EXPORT] Error saving {format} to {filepath}: {str(e)}")
+        return False
